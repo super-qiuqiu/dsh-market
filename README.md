@@ -11,6 +11,8 @@ English | [中文](README.zh.md)
 
 The plugin market inside DeepSeek Harness. Open Settings → **Plugin Market** → browse, search, one-click install. Settings sits in the sidebar up to dsh 0.2.0 and in the account menu from 0.2.1.
 
+> 📡 **The same catalog is also a plugin market index.** On dsh 0.2.1+, open **Plugins → Discover → Index sources** and add `https://awesome-dsh-plugin.com/index.json` — or `https://dshmarket.com/index.json`, the same document. The host's Discover tab and the `plugin_market` agent tool then search it.
+
 ![dsh-market](assets/demo-en.png)
 
 One-click themes: install, switch live, no restart.
@@ -42,7 +44,6 @@ its own dsh: it may be older than the one `npm` would give you (#139).
 ## What you get
 
 - **Browse & search** the full community catalog (4200+ plugins, growing daily) — category filters, star counts, top/new sorting, bilingual descriptions that follow your UI language
-- **The same catalog in the official Discover tab** — the list is also published as a plugin market index. On dsh 0.2.1+ add `https://awesome-dsh-plugin.com/index.json` under **Plugins → Discover → Index sources**, and the host's own Discover tab and its `plugin_market` agent tool search the same entries (the feature ships behind dsh's optional plugin-market bundle)
 - **Host-aware discovery** — cards show the DSH requirement declared by `engines.dsh` or lockstep `@deepseek-ai/dsh-*` peers; an opt-in filter hides only confirmed mismatches with the running host. Undeclared, malformed, unavailable, and GitHub-only entries remain visible rather than being guessed incompatible
 - **Screenshots** — AppStore-style screenshots, auto-carousel when there's more than one, click to preview full-size: author-curated shots show right on the card (zero extra requests); plugins without curated shots fall back to automatic README extraction once you open the install dialog. Images load from GitHub hosting only
 - **Comments** — every card opens the plugin's discussion thread in place. It is the same thread its pages on [dshmarket.com](https://dshmarket.com) and the [catalog](https://awesome-dsh-plugin.com) show, so a plugin has one conversation rather than three. Backed by GitHub Discussions through giscus: it loads when you open it, needs a GitHub account only to post, and the note above it says plainly that opening it contacts giscus.app and GitHub. On local dsh web, reading stays embedded while a dedicated GitHub action opens the exact discussion in a new tab for sign-in and posting, so the cross-site return never carries or depends on the host session

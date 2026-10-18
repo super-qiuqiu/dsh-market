@@ -72,6 +72,11 @@ __HOME_CSS__
   <p><b><span id="count">__COUNT__</span> 个社区插件</b>，逛一逛，点一下，装好——多数插件连重启都不用。更新、卸载、实时安装进度，零遥测。</p>
   <div class="install"><code>dsh plugin --profile web add dshmarket</code><button onclick="navigator.clipboard.writeText('dsh plugin --profile web add dshmarket');this.textContent='已复制!';setTimeout(()=>this.textContent='复制',1500)">复制</button></div>
   <div class="sub">然后重启 <code>dsh web</code> → 设置 → <b>插件市场</b>，就这么多。</div>
+  <p style="margin-top:1.1rem;color:var(--ink2);font-size:.95rem">
+    这份目录同时是一份<strong>插件市场索引</strong>。dsh 0.2.1 起，打开 <strong>插件 → 发现（Discover）→ 索引源（Index sources）</strong>，添加
+    <code>https://dshmarket.com/index.json</code>——或 <code>https://awesome-dsh-plugin.com/index.json</code>，同一份文档。官方发现页和
+    <code>plugin_market</code> 智能体工具就能搜索同一批插件。
+  </p>
 </section>
 
 __HOME_CATALOG__
@@ -86,11 +91,6 @@ __HOME_CATALOG__
   <div class="card"><div class="ic">🧩</div><h3>零术语</h3><p>缺组件?市场自己发现、一键装好。你全程见不到终端。</p></div>
   <div class="card"><div class="ic">🔒</div><h3>有护栏</h3><p>只允许安装精选列表内的来源,构建脚本默认禁止执行,终端类插件装错位置前会被提醒。</p></div>
   <div class="card"><div class="ic">🕊️</div><h3>默认隐私</h3><p>市场不向任何地方上报数据;连反馈用的日志导出都已脱敏,且只存在你机器上。</p></div>
-  <p style="grid-column:1/-1;margin-top:1.2rem;color:var(--ink2);font-size:.95rem">
-    这份目录同时是一份<strong>插件市场索引</strong>。dsh 0.2.1 起，打开 <strong>插件 → 发现（Discover）→ 索引源（Index sources）</strong>，添加
-    <code>https://dshmarket.com/index.json</code>——或 <code>https://awesome-dsh-plugin.com/index.json</code>，同一份文档。官方发现页和
-    <code>plugin_market</code> 智能体工具就能搜索同一批插件。
-  </p>
   </div>
 </section>
 

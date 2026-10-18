@@ -11,6 +11,8 @@
 
 装在 DeepSeek Harness 里的插件市场。打开设置 → **插件市场** → 逛一逛，点一下，装好。设置入口在 dsh 0.2.0 及以前位于侧边栏，0.2.1 起移到了账号菜单里。
 
+> 📡 **同一份目录也是一份插件市场索引。** dsh 0.2.1 起，打开 **插件 → 发现（Discover）→ 索引源（Index sources）**，添加 `https://awesome-dsh-plugin.com/index.json`——或 `https://dshmarket.com/index.json`，同一份文档。宿主自己的发现页和 `plugin_market` 智能体工具就能搜索它。
+
 ![dsh-market](assets/demo-zh.png)
 
 主题一键换：装完即生效，点一下切换，不用重启。
@@ -37,7 +39,6 @@ dsh plugin --profile web add dshmarket
 ## 你会得到
 
 - **逛与搜**——完整社区目录（4200+ 插件，每天在涨），分类筛选、star 数、最热/最新排序，中英描述跟随界面语言
-- **同一份目录也能进官方 Discover**——这份列表同时发布为插件市场索引：dsh 0.2.1 起，在 **插件 → 发现 → 索引源** 里添加 `https://awesome-dsh-plugin.com/index.json`，宿主自己的发现页和它的 `plugin_market` 智能体工具就能搜索同一批条目（该能力挂在 dsh 可选的 plugin-market bundle 上）
 - **按宿主发现**——卡片展示插件通过 `engines.dsh` 或同版本线 `@deepseek-ai/dsh-*` peer 声明的 DSH 要求；可选筛选只隐藏与当前宿主明确不匹配的插件。未声明、格式异常、暂时取不到清单及仅 GitHub 发布的条目仍保持可见，不猜成不兼容
 - **截图展示**——App Store 式截图，多图自动轮播，点开还能看大图；作者在 registry 里策展的截图列表卡片就直接显示（零额外请求），没有策展的插件则在打开安装弹窗时自动从 README 抽取；图片仅从 GitHub 图床加载
 - **评论**——每张卡片都能就地打开该插件的讨论。它和插件在 [dshmarket.com](https://dshmarket.com) 与[目录站](https://awesome-dsh-plugin.com)上的页面共用同一条讨论，一个插件只有一处对话，而不是三处。底层是 GitHub Discussions（经由 giscus）：打开即加载，只有发表评论才需要 GitHub 账号；说明里也直说打开会连接 giscus.app 与 GitHub。本地 dsh web 继续内嵌评论供阅读，登录和发表则通过专用 GitHub 入口在新标签页打开当前插件的精确讨论，不让跨站回跳携带或依赖宿主会话
