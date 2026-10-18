@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createOfficialDesktopRuntime, type OfficialPluginManagerLike } from '../src/official-desktop.ts'
+import { createOfficialDesktopRuntime, type OfficialPluginManagerLike, type SelfUpdateRunner } from '../src/official-desktop.ts'
 import { withHoistRecovery } from '../src/install.ts'
 import { routesFor, setActiveRegion } from '../src/regions.ts'
 
@@ -13,11 +13,19 @@ beforeEach(() => {
   setActiveRegion('global')
 })
 
-function profile(): string {
+function profile(extra: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'dshm-official-'))
   roots.push(dir)
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { example: '1.0.0', gitplug: 'github:o/r' } }))
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { example: '1.0.0', gitplug: 'github:o/r', ...extra } }))
   return dir
+}
+
+function hostPnpm(): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
+  return { command: '/host/node', args: ['--expose-internals', '/host/pnpm.mjs'], env: { PATH: '/host/bin' } }
+}
+
+function selfRunner(): SelfUpdateRunner & ReturnType<typeof vi.fn> {
+  return vi.fn(async () => ({ exitCode: 0 as const, timedOut: false, stdout: 'updated', stderr: '', cancelled: false }))
 }
 
 afterEach(() => {
@@ -294,5 +302,64 @@ describe('official Electron profile runtime', () => {
     const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
     // Unrecognized codes stay as the manager wrote them.
     await expect(runtime.runPlugin('desktop', ['add', 'example'])).resolves.toMatchObject({ exitCode: 1, stderr: '{"code":"network"}' })
+  })
+
+  it('updates the market itself with the host package manager, never the manager (#900)', async () => {
+    const service = manager()
+    const runner = selfRunner()
+    const dir = profile({ dshmarket: '1.66.38' })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', dir, hostPnpm(), runner)
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'dshmarket@1.66.39'])).resolves
+        .toMatchObject({ exitCode: 0, stdout: 'updated' })
+      expect(runner).toHaveBeenCalledWith(dir, 'dshmarket@1.66.39', expect.objectContaining({ command: '/host/node' }))
+      expect(service.installBundle).not.toHaveBeenCalled()
+      expect(service.removeBundle).not.toHaveBeenCalled()
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('does not need the manager to update the market itself', async () => {
+    const runner = selfRunner()
+    const dir = profile({ dshmarket: '1.66.38' })
+    const runtime = createOfficialDesktopRuntime(() => undefined, 'desktop', dir, hostPnpm(), runner)
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'dshmarket@1.66.39'])).resolves
+        .toMatchObject({ exitCode: 0 })
+      expect(runner).toHaveBeenCalledTimes(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('updates a git-hosted market fork through the same direct path', async () => {
+    const service = manager()
+    const runner = selfRunner()
+    const dir = profile({ dshmarket: 'github:super-qiuqiu/dsh-market#0123456789abcdef' })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', dir, hostPnpm(), runner)
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'github:super-qiuqiu/dsh-market'])).resolves
+        .toMatchObject({ exitCode: 0 })
+      expect(runner).toHaveBeenCalledWith(dir, 'github:super-qiuqiu/dsh-market', expect.anything())
+      expect(service.installBundle).not.toHaveBeenCalled()
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('keeps other packages on the manager even when a host package manager exists', async () => {
+    const service = manager()
+    const runner = selfRunner()
+    const dir = profile({ dshmarket: '1.66.38' })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', dir, hostPnpm(), runner)
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves
+        .toMatchObject({ exitCode: 0, stdout: 'installed' })
+      expect(runner).not.toHaveBeenCalled()
+      expect(service.installBundle).toHaveBeenCalledWith('example@2.0.0', { requestId: expect.any(String) })
+    } finally {
+      await runtime.dispose()
+    }
   })
 })

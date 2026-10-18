@@ -186,7 +186,7 @@ describe('profile the launcher booted (#639)', () => {
     })
     expect(state.mounts[0].runtime).toBe(state.runtime)
     expect(state.officialFactoryArgs).toHaveLength(1)
-    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['desktop', launcher.dir])
+    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['desktop', launcher.dir, null])
     expect(state.mounts[0].config).toMatchObject({ desktopHost: true, allowRestart: false })
   })
 
@@ -218,7 +218,7 @@ describe('profile the launcher booted (#639)', () => {
     apply(ctx as never, { profile: 'desktop' })
 
     expect(state.officialFactoryArgs).toHaveLength(1)
-    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['desktop', undefined])
+    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['desktop', undefined, null])
     expect(state.mounts[0].config).toMatchObject({ profile: 'desktop', desktopHost: true, allowRestart: false })
     // No launcher answered, so no directory: the routes derive it, exactly as
     // they do for the flag-and-default path.
@@ -230,8 +230,27 @@ describe('profile the launcher booted (#639)', () => {
 
     apply(ctx as never, { profile: 'Desktop' })
 
-    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['Desktop', launcher.dir])
+    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual(['Desktop', launcher.dir, null])
     expect(state.mounts[0].config).toMatchObject({ profile: 'Desktop', profileDirectory: launcher.dir })
+  })
+
+  it('hands the host package manager to the official runtime for self-update (#900)', () => {
+    // The official manager cannot re-add an installed package, and removing
+    // the market to update it unloads the code doing the update. The one
+    // owner of a working pnpm on this host is `profileContext.packageManager`;
+    // the runtime uses it only for the market's own `add`.
+    const packageManager = { command: '/host/node', args: ['--expose-internals', '/host/pnpm.mjs'], env: { PATH: '/host/bin' } }
+    const ctx = new FakeContext({
+      webServer: {}, loader: {},
+      profileContext: { ...launcher, packageManager },
+    })
+
+    apply(ctx as never)
+
+    expect(state.officialFactoryArgs[0]?.slice(1)).toEqual([
+      'desktop', launcher.dir,
+      { command: '/host/node', args: ['--expose-internals', '/host/pnpm.mjs'], env: { PATH: '/host/bin' } },
+    ])
   })
 
   it('falls back to the flag and then to web when the launcher says nothing usable', () => {

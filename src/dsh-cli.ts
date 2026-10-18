@@ -400,7 +400,7 @@ function spawnEnv(): NodeJS.ProcessEnv {
   }
 }
 
-const INSTALL_TIMEOUT_MS = Number(process.env.DSH_MARKET_INSTALL_TIMEOUT_MS) || 15 * 60 * 1000
+export const INSTALL_TIMEOUT_MS = Number(process.env.DSH_MARKET_INSTALL_TIMEOUT_MS) || 15 * 60 * 1000
 
 /**
  * Windows npm/corepack/pnpm are `.cmd` shims. Node's `spawn` without a shell
@@ -728,7 +728,7 @@ let activeDesktopOperation: ActiveDesktopOperation | null = null
  * SIGTERM with a 5s SIGKILL escalation elsewhere so pnpm can clean up.
  * (Cancel flow contributed in #6 by @qichuang321.)
  */
-function killTree(child: ChildProcess): void {
+export function killTree(child: ChildProcess): void {
   if (process.platform === 'win32' && child.pid !== undefined) {
     try {
       spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true })

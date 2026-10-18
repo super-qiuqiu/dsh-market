@@ -1,8 +1,9 @@
 /** The official Electron profile is owned by DSH's in-process plugin manager. */
 
 import { randomUUID } from 'node:crypto'
-import { progress, TARGET_RE, type DesktopPluginRuntime, type InstallResult } from './dsh-cli.ts'
+import { progress, TARGET_RE, type DesktopPluginRuntime, type HostPackageManager, type InstallResult } from './dsh-cli.ts'
 import { activeRegion, DEFAULT_NPM_REGISTRY, routesFor } from './regions.ts'
+import { cancelSelfUpdate, isSelfUpdateTarget, runSelfUpdate, selfUpdateRunning } from './self-update.ts'
 
 interface ManagedResult {
   application: string
@@ -163,13 +164,25 @@ async function installOrReinstall(
  * for the market the answer is the same on every version: the app's own
  * plugin manager is the only door.
  */
+export type SelfUpdateRunner = (
+  profileDirectory: string,
+  spec: string,
+  packageManager: HostPackageManager,
+) => Promise<InstallResult>
+
 export function createOfficialDesktopRuntime(
   managerLookup: () => OfficialPluginManagerLike | undefined,
   profileName: string,
-  // Unused by the manager bridge — it takes the profile by NAME — and optional
-  // because an explicitly configured `profile: desktop` may be the only thing
-  // that names this profile, with no launcher directory to go with it (#744).
-  _profileDirectory?: string,
+  // The launcher's authoritative profile directory. Required for the market's
+  // own update: the host manager cannot update it, so that one operation runs
+  // the host's pnpm directly against this directory.
+  profileDirectory?: string,
+  // `profileContext.packageManager`: the host's bundled node + pnpm. Absent on
+  // hosts that only expose the manager (and on an explicitly configured
+  // `profile: desktop` with no launcher, #744), where self-update keeps the
+  // existing refusal instead of inventing a path.
+  packageManager?: HostPackageManager | null,
+  runSelfUpdateImpl: SelfUpdateRunner = runSelfUpdate,
 ): DesktopPluginRuntime {
   let disposed = false
   let active: { requestId?: string; cancelled: boolean; done: Promise<InstallResult> } | undefined
@@ -178,13 +191,6 @@ export function createOfficialDesktopRuntime(
     if (disposed) return Promise.resolve(failure('official desktop plugin runtime is disposed', 127))
     if (profile !== profileName) return Promise.resolve(failure('refusing to change a different profile', 127))
     if (active !== undefined) return Promise.resolve({ ...failure('another plugin operation is running', 127), busy: true })
-    const manager = managerLookup()
-    if (manager === undefined
-      || typeof manager.installBundle !== 'function'
-      || typeof manager.removeBundle !== 'function'
-      || typeof manager.cancelInstall !== 'function') {
-      return Promise.resolve(failure(OFFICIAL_PAGE_HINT, 127))
-    }
 
     // Market sends pnpm argv. Only operations representable by the official
     // manager are accepted; silently dropping pnpm flags would change intent.
@@ -211,6 +217,45 @@ export function createOfficialDesktopRuntime(
     // release channel, which is a different operation, so the refusal stays
     // for any caller that asks for something the manager cannot express.
     if (command !== 'add' && command !== 'remove') {
+      return Promise.resolve(failure(OFFICIAL_PAGE_HINT, 127))
+    }
+
+    // The market itself is the one package the host's manager cannot update:
+    // it answers `already-installed` and its only fallback removes the running
+    // bundle before the reinstall can happen (#896, #900). Run the host's own
+    // pnpm instead, which updates in place and never touches the bundle row.
+    // The spec is interpreted only after TARGET_RE above, and only when the
+    // host actually published the package manager it runs pnpm with (#653).
+    if (command === 'add'
+      && packageManager != null
+      && profileDirectory !== undefined
+      && isSelfUpdateTarget(profileName, profileDirectory, spec)) {
+      const current: { requestId?: string; cancelled: boolean; done: Promise<InstallResult> } = {
+        cancelled: false,
+        done: Promise.resolve(failure('not started')),
+      }
+      active = current
+      progress.active = true
+      progress.target = target
+      progress.startedAt = Date.now()
+      progress.lastLine = 'Updating the plugin market with the host package manager'
+      progress.error = null
+      progress.cancelling = false
+      current.done = Promise.resolve()
+        .then(() => runSelfUpdateImpl(profileDirectory, spec, packageManager))
+        .finally(() => {
+          progress.active = false
+          progress.cancelling = false
+          if (active === current) active = undefined
+        })
+      return current.done
+    }
+
+    const manager = managerLookup()
+    if (manager === undefined
+      || typeof manager.installBundle !== 'function'
+      || typeof manager.removeBundle !== 'function'
+      || typeof manager.cancelInstall !== 'function') {
       return Promise.resolve(failure(OFFICIAL_PAGE_HINT, 127))
     }
 
@@ -280,6 +325,10 @@ export function createOfficialDesktopRuntime(
     probePnpm: async () => managerLookup() !== undefined,
     provisionPnpm: async () => ({ ok: managerLookup() !== undefined, hint: 'Use the official desktop plugin manager' }),
     cancelActive: () => {
+      if (selfUpdateRunning()) {
+        cancelSelfUpdate()
+        return true
+      }
       if (active?.requestId === undefined) return false
       active.cancelled = true
       progress.cancelling = true
@@ -294,6 +343,7 @@ export function createOfficialDesktopRuntime(
     acceptsMarketPnpmFlags: false,
     dispose: async () => {
       disposed = true
+      if (selfUpdateRunning()) cancelSelfUpdate()
       if (active?.requestId !== undefined) {
         const manager = managerLookup()
         if (manager !== undefined) void manager.cancelInstall(active.requestId).catch(() => {})

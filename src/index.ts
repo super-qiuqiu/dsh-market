@@ -255,6 +255,10 @@ export function apply(ctx: Context, config?: Config): void {
           () => hostCtx.get('pluginManager') as OfficialPluginManagerLike | undefined,
           profileName,
           profileDirectory,
+          // The host's own node + pnpm. This is what lets the market update
+          // itself: the manager cannot re-add an installed package, and
+          // remove-then-install would unload the code doing the install (#900).
+          hostPackageManagerOf(profileContext),
         )
         const resolved: MarketConfig = {
           profile: profileName,
