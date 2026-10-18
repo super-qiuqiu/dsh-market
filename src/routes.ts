@@ -52,6 +52,7 @@ import { resolveRegion } from './region-probe.ts'
 import { acceleratedTarget, resolveHeadCommit } from './accelerate.ts'
 import { updateNotesFor } from './changelog.ts'
 import { checkUpdates, isUpdatablePlugin, compareVersions, fetchNpmLatest, invalidateUpdates, resolveGitRemoteHead, isUpgrade, latestPublishedRecently, setUpdateRegistry, versionOnChannel } from './updates.ts'
+import { checkForkUpstreams } from './forks.ts'
 import { createThemeManager, type LoaderEntry } from './themes.ts'
 import { readJsonBody, refuseUnadmitted, sameOrigin, sendJson } from './http.ts'
 import { resolveDshHome } from './home-paths.ts'
@@ -3871,6 +3872,28 @@ export function mountMarketRoutes(
             if (status !== undefined) updates[name] = { ...status, sourceMigration: migration }
           }
 sendJson(response, 200, { updates })
+        } catch (error) {
+          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+
+    // Upstream releases for installed forks ("二开"). Read-only on purpose:
+    // this never marks a fork installable and never changes the profile. It
+    // answers "has upstream moved past the base my fork is on?" so the client
+    // can remind the user to sync their own checkout.
+    registerRoute({
+      kind: 'exact',
+      path: '/dsh-market/forks',
+      handler: async (request, response) => {
+        if (request.method !== 'GET') {
+          response.writeHead(405, { allow: 'GET' })
+          response.end()
+          return
+        }
+        try {
+          const report = await checkForkUpstreams(config.profile, activeProfileDir)
+          sendJson(response, 200, { schema: 'dsh-market/forks/v1', ...report })
         } catch (error) {
           sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
         }

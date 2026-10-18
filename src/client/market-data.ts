@@ -1609,6 +1609,15 @@ export function localizeBilingualList(parts: string[], lang: 'zh' | 'en'): strin
  * Not a substitute for the identity: every key, lookup and install still
  * uses `name` unchanged.
  */
+/** Upstream release facts for an installed fork ("二开"). Display only: never installable. */
+export interface ForkUpstreamStatus {
+  readonly installedVersion: string
+  readonly upstreamVersion: string | null
+  readonly updateAvailable: boolean
+  readonly upstreamName: string | null
+  readonly repo: string | null
+}
+
 export function pluginName(name: string): string {
   const hash = name.indexOf('#')
   if (hash === -1) return name

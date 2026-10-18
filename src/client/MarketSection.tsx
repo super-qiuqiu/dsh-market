@@ -58,7 +58,7 @@ import {
 } from './market-data.ts'
 import type {
 ActivationInfo, ActivationState, GistExportResult, InstalledMap, InstalledRepoHints, InstalledRepoIdentities, MarketStatus, Registry, RegistryPlugin,
-  HostCompatibility, HostCompatibilityMap, ScreenshotCandidate, ScreenshotMeasurement, SharedHostPackageDependencyFinding, SortDir, SortField, ThemeSnapshot, TimeRange, Translate, UpdateStatus,
+  HostCompatibility, HostCompatibilityMap, ScreenshotCandidate, ScreenshotMeasurement, SharedHostPackageDependencyFinding, SortDir, SortField, ThemeSnapshot, TimeRange, Translate, UpdateStatus, ForkUpstreamStatus,
 } from './market-data.ts'
 
 function isHostDependencyFinding(value: unknown): value is SharedHostPackageDependencyFinding {
@@ -1972,6 +1972,8 @@ export function MarketSection(props: MarketSectionProps) {
    */
   const [updates, setUpdatesState] = useState<Record<string, UpdateStatus>>(() => cachedUpdates)
   const setUpdates = useCallback(cacheState(value => { cachedUpdates = value }, setUpdatesState), [])
+  /** Upstream releases for installed forks; display only, never installable. */
+  const [forkUpdates, setForkUpdates] = useState<Record<string, ForkUpstreamStatus>>({})
   const queueRestoredRef = useRef(false)
   const [queueSnapshotReady, setQueueSnapshotReady] = useState({
     installed: cachedInstalledReady,
@@ -2631,6 +2633,14 @@ export function MarketSection(props: MarketSectionProps) {
         setUpdates(body.updates || {})
         cachedUpdatesReady = true
         setQueueSnapshotReady(ready => ({ ...ready, updates: true }))
+      })
+      .catch(() => {})
+    fetch(api('/dsh-market/forks'), { cache: 'no-store' })
+      .then(res => res.json())
+      .then(body => {
+        if (body.forks !== null && typeof body.forks === 'object' && !Array.isArray(body.forks)) {
+          setForkUpdates(body.forks as Record<string, ForkUpstreamStatus>)
+        }
       })
       .catch(() => {})
   }, [setActivations, setBlockedNames, setDisabledNames, setFavoriteUrls, setInstalledBundles, setInstalledFiles, setSkins, setUpdates])
@@ -4979,6 +4989,8 @@ export function MarketSection(props: MarketSectionProps) {
   // completed `updatedNames` entry (which would double-count a batch update
   // that reports both a done URL and a name for the same plugin).
   const sessionPendingRestart = doneUrls.length + restartNames.length + removedCount + toggleRestart + (backupRestored ? 1 : 0)
+  /** Forks whose upstream has moved past the base they are on. Display only. */
+  const forkUpstreamPending = Object.entries(forkUpdates).filter(([, fork]) => fork.updateAvailable)
   /**
    * Plugins the HOST reports as restart-pending, independent of what this
    * browser session happens to remember. Installing and then reloading the
@@ -5889,6 +5901,20 @@ export function MarketSection(props: MarketSectionProps) {
               find the repo it came from. */}
           <a className={css.repoLink} href="https://github.com/dsh-market/dsh-market" target="_blank" rel="noreferrer" title="dsh-market · GitHub">dsh-market</a>
           {version !== null && <span className={css.version} title={t('versionHint')}>v{version}</span>}
+          {(() => {
+            const self = installed['dshmarket'] !== undefined ? 'dshmarket' : 'dsh-market'
+            const fork = forkUpdates[self]
+            if (fork === undefined || !fork.updateAvailable || fork.upstreamVersion === null) return null
+            return (
+              <a
+                className={`${css.metaTag} ${css.metaTagFork}`}
+                href={fork.repo === null ? undefined : `https://github.com/${fork.repo}`}
+                target="_blank"
+                rel="noreferrer"
+                title={t('forkUpstreamHint')}
+              >{t('forkTag')} · {t('forkUpstream')} v{fork.upstreamVersion}</a>
+            )
+          })()}
           <div className={css.titleActions}>
           {(() => {
             const self = installed['dshmarket'] !== undefined ? 'dshmarket' : 'dsh-market'
@@ -6051,6 +6077,30 @@ export function MarketSection(props: MarketSectionProps) {
         {/* #875: rendered only when DSH's own recovery replaced the profile
             patch — for every other profile this is null. */}
         <HostRecoveryBanner t={t} bootId={bootId} />
+        {/* Upstream releases for installed forks. This is a reminder to sync
+            the user's own checkout, never an installable update: the rows stay
+            out of the update buttons and the batch, and nothing here changes
+            the profile. */}
+        {tab === 'installed' && forkUpstreamPending.length > 0 && (
+          <div className={css.banner}>
+            <IconRefreshOutline14 size={14} className={css.bannerIcon} />
+            <span className={css.grow}>
+              <b>{forkUpstreamPending.length}</b> {t('forkUpstreamBanner')}
+              {' '}
+              {forkUpstreamPending.map(([name, fork], index) => (
+                <Fragment key={name}>
+                  {index > 0 && <span className={css.irowStatusSep} aria-hidden="true"> · </span>}
+                  <span className={css.forkChip}>
+                    {fork.repo !== null
+                      ? <a href={`https://github.com/${fork.repo}`} target="_blank" rel="noreferrer" title={t('forkUpstreamHint')}>{name}</a>
+                      : name}
+                    {fork.upstreamVersion !== null ? ` v${fork.upstreamVersion}` : ''}
+                  </span>
+                </Fragment>
+              ))}
+            </span>
+          </div>
+        )}
         {tab === 'installed' && pendingBackup !== null && (
           <div className={css.banner}>
             <IconRefreshOutline14 size={14} className={css.bannerIcon} />
@@ -7009,6 +7059,7 @@ export function MarketSection(props: MarketSectionProps) {
                             const missing = pendingBackup !== null && !installedFiles.includes(name)
                             const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(spec), repoIdentities[name], repoHints[name])
                             const status = updates[name]
+                            const fork = forkUpdates[name]
                             // A generation is the desktop host's own install (#497):
                             // the host updates it, the market only says a newer
                             // release exists. Not a development checkout, so no
@@ -7315,6 +7366,12 @@ export function MarketSection(props: MarketSectionProps) {
                                 })()}
                                 {/* The status tags stay one unit, so a wrap moves them together (#242). */}
                                 <span className={css.irowTrailing}>
+                                {fork !== undefined && (
+                                  <span
+                                    className={`${css.metaTag} ${fork.updateAvailable ? css.metaTagFork : ''}`}
+                                    title={fork.repo === null ? t('forkUpstreamHint') : `${t('forkUpstreamHint')} · ${fork.repo}`}
+                                  >{t('forkTag')}{fork.upstreamVersion === null ? '' : ` · ${t('forkUpstream')} v${fork.upstreamVersion}`}</span>
+                                )}
                                 {!missing && status?.sourceMigration !== undefined && (
                                   <Button
                                     variant="outline"
