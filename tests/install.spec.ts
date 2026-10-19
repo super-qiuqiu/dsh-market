@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import type { InstallResult } from '../src/dsh-cli.ts'
 import {
   diagnosticsTail, failureDetail, FETCH_TIMEOUT_OVERRIDE, groupConflictsByOwner, hostNodeModulesRoot, isStaleUpdate, normalizedLinkTarget,
-  parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareNotAllowed, pnpmNeverStarted, removeDanglingHostBridge, retargetCollections,
+  parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareNotAllowed, pnpmNeverStarted, pnpmRefusedYoungRelease, removeDanglingHostBridge, retargetCollections,
   RELEASE_AGE_OVERRIDE, validateAddedPlugins, withHoistRecovery,
 } from '../src/install.ts'
 import { dropUnparseableBuildKeys, profileDir } from '../src/profile.ts'
@@ -593,9 +593,9 @@ describe('withHoistRecovery', () => {
     expect(result.exitCode).toBe(1)
     // The one command, then only the orphan-store probe — never the override.
     expect(calls).toEqual([['add', 'thing'], ['store', 'path']])
-    // And the message does not claim a retry that could not happen.
+    // And the message does not claim a retry that could not happen (#732 / #919).
     expect(result.stderr).toContain('没有自动重试')
-    expect(result.stderr).toContain(RELEASE_AGE_OVERRIDE)
+    expect(result.stderr).not.toMatch(/已自动放行重试|already retried|retries once with a one-shot/)
   })
 
   describe('a locked package directory on the official desktop app (#798)', () => {
@@ -627,16 +627,53 @@ describe('withHoistRecovery', () => {
     })
   })
 
-  it('tells a desktop user on the fresh-release wait when the button starts working (#852)', async () => {
+  it('tells a desktop user on the fresh-release wait what to do, without a door that is shut (#852, #919)', async () => {
     // "no retry happened" is not an answer here: the plugin IS published, pnpm
-    // simply will not take it yet, and the door a plain `dsh web` host would
-    // open is shut on the official desktop app. The reporter had updates AND
-    // uninstalls failing with nothing to do about either.
+    // simply will not take it yet. #852 pointed at plain `dsh web`, but that
+    // profile is desktop-managed — the same door #909 already proved shut.
+    // Say the wait, and (when pnpm named the publish time) how long is left.
+    // The classifier's "market already retried" sentence must not stay: the
+    // client prefers body.error / stderr's classified half over the note.
+    const published = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString()
+    const stderr = `[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:\n  thing@1.0.0 was published at ${published}, within the minimumReleaseAge cutoff`
+    const run = async (): Promise<InstallResult> => ({ exitCode: 1, timedOut: false, stdout: '', stderr, cancelled: false })
+    const result = await withHoistRecovery(run, 'desktop', ['add', 'thing'], undefined, { marketFlags: false })
+    expect(result.stderr).toContain('等这个版本过了等待期再更新一次即可')
+    expect(result.stderr).toContain('没有自动重试')
+    expect(result.stderr).not.toMatch(/dsh web|plain dsh web/)
+    expect(result.stderr).not.toMatch(/已自动放行重试|already retried|retries once with a one-shot/)
+    expect(result.stderr).toMatch(/还剩|约|小时|hour/i)
+  })
+
+  it('still names the wait when pnpm did not include a publish time (#919)', async () => {
     const run = async (): Promise<InstallResult> => ({ exitCode: 1, timedOut: false, stdout: '', stderr: AGE_VIOLATION_STDERR, cancelled: false })
     const result = await withHoistRecovery(run, 'desktop', ['add', 'thing'], undefined, { marketFlags: false })
     expect(result.stderr).toContain('等这个版本过了等待期再更新一次即可')
-    expect(result.stderr).toContain('dsh web')
+    expect(result.stderr).not.toMatch(/dsh web|plain dsh web/)
+    expect(result.stderr).not.toMatch(/已自动放行重试|already retried|retries once with a one-shot/)
     expect(result.stderr).toContain('没有自动重试')
+  })
+
+  it('does not invent a remaining wait when the profile\'s age window cannot be read (#919)', async () => {
+    const dir = writeProfile({})
+    writeFileSync(join(dir, 'pnpm-workspace.yaml'), 'minimumReleaseAge: not-a-number\n')
+    const published = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString()
+    const stderr = `[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:\n  thing@1.0.0 was published at ${published}, within the minimumReleaseAge cutoff`
+    const run = async (): Promise<InstallResult> => ({ exitCode: 1, timedOut: false, stdout: '', stderr, cancelled: false })
+    const result = await withHoistRecovery(run, 'desktop', ['add', 'thing'], dir, { marketFlags: false })
+    expect(result.stderr).toContain('等这个版本过了等待期再更新一次即可')
+    expect(result.stderr).not.toMatch(/还剩 \d+ 小时|about \d+ hour/i)
+  })
+
+  it('uses the profile\'s own minimumReleaseAge window for the remaining wait (#919)', async () => {
+    const dir = writeProfile({})
+    // 48 hours: a release 10 hours old still has ~38 hours left, not ~14.
+    writeFileSync(join(dir, 'pnpm-workspace.yaml'), 'minimumReleaseAge: 2880\n')
+    const published = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString()
+    const stderr = `[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:\n  thing@1.0.0 was published at ${published}, within the minimumReleaseAge cutoff`
+    const run = async (): Promise<InstallResult> => ({ exitCode: 1, timedOut: false, stdout: '', stderr, cancelled: false })
+    const result = await withHoistRecovery(run, 'desktop', ['add', 'thing'], dir, { marketFlags: false })
+    expect(result.stderr).toMatch(/还剩 3[0-9] 小时|about 3[0-9] hours/)
   })
 
   it('keeps the plain "no retry" note for a skipped step that is not the wait', async () => {
@@ -901,6 +938,19 @@ describe('pnpmNeverStarted (#502)', () => {
     // inspect this profile" notice is equally an alarm about nothing.
     expect(pnpmNeverStarted(failed({ stderr: "Error: spawnSync pnpm EACCES\n  code: 'EACCES',\n  syscall: 'spawnSync pnpm'," }))).toBe(true)
     expect(pnpmNeverStarted(failed({ stderr: 'some other failure' }))).toBe(false)
+    // #919: release-age is a different "untouched" shape — pnpm DID start —
+    // covered by pnpmRefusedYoungRelease, not by this predicate.
+    expect(pnpmNeverStarted(failed({ stderr: '[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] young' }))).toBe(false)
+  })
+})
+
+describe('pnpmRefusedYoungRelease (#919)', () => {
+  it('is true when pnpm refused a too-young release without writing', () => {
+    const failed = (over: Partial<InstallResult>): InstallResult =>
+      ({ exitCode: 1, timedOut: false, stdout: '', stderr: '', cancelled: false, ...over })
+    expect(pnpmRefusedYoungRelease(failed({ stderr: '[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] young' }))).toBe(true)
+    expect(pnpmRefusedYoungRelease(failed({ stderr: 'ERR_PNPM_NO_MATURE_MATCHING_VERSION No matching version' }))).toBe(true)
+    expect(pnpmRefusedYoungRelease(failed({ stderr: 'ERR_PNPM_FETCH_404 GET https://registry.npmjs.org/ghost: Not Found - 404' }))).toBe(false)
   })
 })
 

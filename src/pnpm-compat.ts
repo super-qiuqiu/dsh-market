@@ -51,7 +51,7 @@ export interface PnpmFailure {
     | 'profile-file-locked'
     | 'pnpm-unusable' | 'missing-local-dependency' | 'unparseable-build-key' | 'native-oom' | 'ssh-auth-failed'
     | 'host-incompatible-install'
-    | 'lockfile-broken' | 'lockfile-outdated' | 'pnpm-stalled'
+    | 'lockfile-broken' | 'lockfile-outdated' | 'pnpm-stalled' | 'profile-write-lock'
   /** Bilingual, actionable message shown to the user instead of the raw wall of text. */
   message: string
   /** True when re-running `pnpm install` in the profile is the documented recovery. */
@@ -227,6 +227,21 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
       message: culprit !== undefined
         ? `依赖 ${culprit} 的安装脚本 ${minutes} 分钟没有任何输出，被终止了，什么都没装上。这类脚本通常在从网上下载文件，多半是当前网络连不上下载地址；插件本身没有问题。换个网络或开启代理后重试；仍然不行就联系插件作者。 / the install script of the dependency ${culprit} printed nothing for ${minutes} minutes and was stopped, so nothing was installed. Scripts like this usually download a file, and this network most likely cannot reach where it comes from; the plugin itself is not at fault. Try again on another network or through a proxy, and contact the plugin's author if it still fails.`
         : `pnpm ${minutes} 分钟没有任何输出，被终止了，什么都没装上。通常是网络卡住了。检查网络后重试。 / pnpm printed nothing for ${minutes} minutes and was stopped, so nothing was installed. This usually means the network stalled. Check the connection and try again.`,
+    }
+  }
+  // #914: the host's atomic-write could not take the profile's write lock.
+  // Either a concurrent operation is legitimately holding it, or an earlier
+  // update was killed hard and left the file behind — on Windows the host
+  // cannot always tell a dead PID from a live one, so it never takes over.
+  // The market does not delete the file: it belongs to the host, and a wrong
+  // deletion races a live operation. Say where it is and what is safe.
+  const writerLock = /timed out waiting for the writer lock at "?([^"\n]+)"?/.exec(output)
+  if (writerLock !== null) {
+    const path = writerLock[1]!.trim()
+    return {
+      code: 'profile-write-lock',
+      recoverable: true,
+      message: `profile 的写锁等了太久没等到：${path}。要么另一个插件操作还在跑（等它结束再试），要么某次被中断的更新把锁留在了那里。确认没有安装或更新正在进行后，删掉这个文件再重试即可；市场不会替你去动它。 / the profile's writer lock was never released: ${path}. Either another plugin operation is still running (wait for it), or an interrupted update left the lock behind. Once nothing is installing or updating, delete that file and try again; the market does not remove it for you.`,
     }
   }
   if (output.includes('ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF')

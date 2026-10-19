@@ -41,7 +41,7 @@ import { createProfileSnapshot, DEFAULT_MAX_SNAPSHOTS, deleteSnapshot, listSnaps
 import { readHostRecoveryView, restoreHostRecoveryBackup } from './host-recovery.ts'
 import { trialValidate } from './trial.ts'
 import { catalogRepoKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitRefOfTarget, gitTargetAtCommit, gitUpdateTarget, hostedRepoKey, lookupRepoFromUrl, pinnedAllowBuildsKeys, installTargetFor, isGenerationLink, isLocalSpec, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, sourceFallbackFor, workspaceProtocolDeps } from './sources.ts'
-import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
+import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, pnpmRefusedYoungRelease, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
 import { classifyPnpmFailure } from './pnpm-compat.ts'
 import { asChannel, CHANNELS, DIST_TAG, resolveChannel, type Channel } from './channels.ts'
 import {
@@ -452,6 +452,14 @@ function pnpmFailureMessage(result: { exitCode: number | null; stdout: string; s
   const failure = classifyPnpmFailure(`${result.stderr}\n${result.stdout}`, result.exitCode)
   if (failure === null) return undefined
   if (failure.code === 'ignored-builds' || failure.code === 'git-prepare-not-allowed') return undefined
+  // Desktop release-age note is already the actionable sentence (#919). Do
+  // not cover it with the classifier's "market already retried" claim —
+  // install/uninstall fall through to stderr via failureText when error is
+  // undefined.
+  if (failure.code === 'release-age-violation'
+    && /没有自动重试|no automatic retry happens here/.test(`${result.stderr}\n${result.stdout}`)) {
+    return undefined
+  }
   return failure.message
 }
 
@@ -4840,7 +4848,12 @@ sendJson(response, 200, { updates })
               // verify restoration, inspect this profile" warning this block
               // raises on a failed rollback would be alarm about an untouched
               // profile.
-              && result.wroteNothing !== true) {
+              && result.wroteNothing !== true
+              // pnpm ran, then refused a too-young release without writing
+              // (#919). Same untouched profile; skipping the rollback keeps
+              // the release-age reason visible instead of covering it with a
+              // false "restoration could not be verified" alarm.
+              && !pnpmRefusedYoungRelease(result)) {
               if (pnpmBlockedByOpenFiles(result)) {
                 const kept = keepLockedBuild()
                 rollbackOk = kept.ok
@@ -5195,7 +5208,10 @@ sendJson(response, 200, { updates })
               // ever sees this when something really is unbootable.
               ...(() => { const orphans = orphanBundles(); return orphans.length > 0 ? { orphanBundles: orphans } : {} })(),
               staleReason: staleReason ?? undefined,
-              failureCode: versionFailureCode ?? undefined,
+              // The host's own refusal code when it stopped before pnpm
+              // (#909): `market-self-update` tells a client that the button
+              // cannot work on this host, not that the update was broken.
+              failureCode: versionFailureCode ?? result.refusalCode ?? undefined,
               renamedTo: renamedTo ?? undefined,
               removedDeclaration: removedDeclaration ?? undefined,
               ...(droppedBundles.length > 0 ? { droppedBundles } : {}),
@@ -5206,8 +5222,14 @@ sendJson(response, 200, { updates })
               // before running pnpm there is no classifier for its words and
               // no rollback behind it, so without this the answer carried no
               // reason at all.
+              // Release-age on Desktop (#919): withHoistRecovery already wrote
+              // the wait note into stderr (and stripped the false "already
+              // retried" classifier). Prefer that over pnpmFailureMessage,
+              // which would re-surface the classifier alone — the client
+              // shows body.error first.
               error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError ?? hardFailureRollbackError ?? staleError
                 ?? (result.wroteNothing === true && result.stderr.trim() !== '' ? result.stderr.trim() : undefined)
+                ?? (pnpmRefusedYoungRelease(result) && result.stderr.trim() !== '' ? result.stderr.trim() : undefined)
                 ?? pnpmFailureMessage(result) ?? undefined,
               exitCode: result.exitCode,
               timedOut: result.timedOut,

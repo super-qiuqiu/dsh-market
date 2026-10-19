@@ -211,7 +211,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setSidebarHint: "在侧栏「插件」下方显示市场。设置里的入口不变。",
 			setSidebarOnlyDoorHint: "这个宿主没有市场设置页，这一行就是进入市场的入口。",
 			setIndexSource: "官方 Discover 索引",
-			setIndexSourceHint: "dsh 0.2.1 起，官方的「插件 → 发现 → 索引源」可以添加 https://awesome-dsh-plugin.com/index.json —— 官方发现页和 plugin_market 智能体工具会搜索同一份目录。",
+			setIndexSourceHint: "dsh 0.2.1 起，官方的「插件 → 发现 → 索引源」可以添加 https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json —— 官方发现页和 plugin_market 智能体工具会搜索同一份目录。",
 			setSidebarOn: "显示",
 			setSidebarOff: "不显示",
 			sidebarTip: "想更快打开？可在侧栏显示。",
@@ -955,7 +955,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setSidebarHint: "Shows the market below Plugins in the sidebar. The Settings entry stays.",
 			setSidebarOnlyDoorHint: "This host keeps the market out of Settings, so this row is the way in.",
 			setIndexSource: "Discover index",
-			setIndexSourceHint: "On dsh 0.2.1 and newer, add https://awesome-dsh-plugin.com/index.json under Plugins → Discover → Index sources — the official Discover tab and the plugin_market agent tool then search the same catalog.",
+			setIndexSourceHint: "On dsh 0.2.1 and newer, add https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json under Plugins → Discover → Index sources — the official Discover tab and the plugin_market agent tool then search the same catalog.",
 			setSidebarOn: "Show",
 			setSidebarOff: "Hide",
 			sidebarTip: "Want a quicker open? Show it in the sidebar.",
@@ -10008,6 +10008,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				setRestarting(true);
 				setInstallError(null);
 				setRecovery(null);
+				const shellRestart = typeof window === "undefined" ? void 0 : window.__dshHostShell?.restart;
+				if (typeof shellRestart === "function") try {
+					shellRestart();
+					return;
+				} catch {}
 				const awaitNewBoot = () => {
 					const deadline = Date.now() + 6e4;
 					const poll = () => {

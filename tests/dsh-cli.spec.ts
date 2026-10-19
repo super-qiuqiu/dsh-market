@@ -1,9 +1,9 @@
 import { EventEmitter } from 'node:events'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { cmdCommandLine, gitEnvForPnpm, probeCoreSshCommand, isCmdSafeProfileName, nodeExecutable, pnpmConfigEnvForArgs, proxyEnvForPnpm, quoteCmdArg, TARGET_RE, toolSearchDirs } from '../src/dsh-cli.ts'
+import { clearOwnedProfileLock, cmdCommandLine, gitEnvForPnpm, probeCoreSshCommand, isCmdSafeProfileName, nodeExecutable, pnpmConfigEnvForArgs, proxyEnvForPnpm, quoteCmdArg, TARGET_RE, toolSearchDirs } from '../src/dsh-cli.ts'
 import { AUTO_INSTALL_PEERS_OFF, FETCH_TIMEOUT_OVERRIDE, RELEASE_AGE_OVERRIDE } from '../src/install.ts'
 import { routesFor, setActiveRegion } from '../src/regions.ts'
 
@@ -584,5 +584,45 @@ describe('pnpmConfigEnvForArgs (#615)', () => {
     expect(pnpmConfigEnvForArgs(['add', '--force', '--reporter=ndjson', 'dsh-loop@1.0.0'])).toEqual({})
     // Not the override shape: no key, or no value.
     expect(pnpmConfigEnvForArgs(['add', '--config.=x', '--config.fetchTimeout='])).toEqual({})
+  })
+})
+
+describe('clearOwnedProfileLock (#914)', () => {
+  // The profile directory comes from DSH_HOME, so the whole case runs in a
+  // throwaway home and never looks at the real one.
+  const home = mkdtempSync(join(tmpdir(), 'dshm-home-'))
+  const lockPath = join(home, 'profiles', 'web', 'package.json.lock')
+
+  afterEach(() => {
+    delete process.env.DSH_HOME
+    rmSync(join(home, 'profiles'), { recursive: true, force: true })
+  })
+
+  function writeLock(content: string): void {
+    mkdirSync(join(home, 'profiles', 'web'), { recursive: true })
+    process.env.DSH_HOME = home
+    writeFileSync(lockPath, content)
+  }
+
+  it('removes the lock naming the child this run just killed', () => {
+    writeLock('4242\n')
+    expect(clearOwnedProfileLock('web', 4242)).toBe(true)
+    expect(existsSync(lockPath)).toBe(false)
+  })
+
+  it('leaves a lock held by another operation alone', () => {
+    // A different PID may be a live operation; deleting its lock would race
+    // it. The classifier names the file instead (#914).
+    writeLock('9999\n')
+    expect(clearOwnedProfileLock('web', 4242)).toBe(false)
+    expect(existsSync(lockPath)).toBe(true)
+  })
+
+  it('does nothing when there is no lock, or its content is not a PID', () => {
+    process.env.DSH_HOME = home
+    expect(clearOwnedProfileLock('web', 4242)).toBe(false)
+    writeLock('not-a-pid')
+    expect(clearOwnedProfileLock('web', 4242)).toBe(false)
+    expect(existsSync(lockPath)).toBe(true)
   })
 })

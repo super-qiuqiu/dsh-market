@@ -11,7 +11,7 @@ English | [中文](README.zh.md)
 
 The plugin market inside DeepSeek Harness. Open Settings → **Plugin Market** → browse, search, one-click install. Settings sits in the sidebar up to dsh 0.2.0 and in the account menu from 0.2.1.
 
-> 📡 **The same catalog is also a plugin market index.** On dsh 0.2.1+, open **Plugins → Discover → Index sources** and add `https://awesome-dsh-plugin.com/index.json` — or `https://dshmarket.com/index.json`, the same document. The host's Discover tab and the `plugin_market` agent tool then search it.
+> 📡 **The same catalog is also a plugin market index.** On dsh 0.2.1+, open **Plugins → Discover → Index sources** and add `https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json`. That is this list as a format-1 index, served from npm so it loads quickly everywhere — dsh gives a source 15 seconds, and the GitHub Pages copies (`https://awesome-dsh-plugin.com/index.json` and `https://dshmarket.com/index.json`) can exceed that from some networks. The host's Discover tab and the `plugin_market` agent tool then search it.
 
 ![dsh-market](assets/demo-en.png)
 

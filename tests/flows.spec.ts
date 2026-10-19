@@ -2696,6 +2696,83 @@ describe('update flow — no npm publishing required', () => {
     expect(adds).toHaveLength(1)
   })
 
+  it('does not try to restore a profile pnpm refused for release-age (#919)', async () => {
+    // Desktop's manager DID run pnpm; pnpm then exited 1 on
+    // ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION without writing anything.
+    // wroteNothing stays false (#897 only covers "pnpm never started"), so
+    // the update route used to enter the rollback block and alarm about an
+    // untouched profile. Same nature as #897: nothing to restore.
+    // acceptsMarketPnpmFlags: false mirrors the official desktop bridge —
+    // no one-shot override retry, one add, then the refusal.
+    advanceNpmLatest('1.2.0')
+    const adds: string[][] = []
+    // Relative publish time so the remaining-wait fragment stays stable.
+    const published = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString()
+    bed.dispose()
+    bed = createTestbed({}, {
+      runPlugin: async (_profile, args) => {
+        if (args[0] === 'add') adds.push(args)
+        return {
+          exitCode: 1,
+          timedOut: false,
+          stdout: '',
+          stderr: `[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:\n  dsh-loop@1.2.0 was published at ${published}, within the minimumReleaseAge cutoff`,
+          cancelled: false,
+          wroteNothing: false,
+        }
+      },
+      acceptsMarketPnpmFlags: false,
+      probePnpm: () => Promise.resolve(true),
+      provisionPnpm: () => Promise.resolve({ ok: true }),
+      cancelActive: () => false,
+    })
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(502)
+    // body.error is what the client shows (#919): the desktop wait note, not
+    // the classifier's "market already retried" sentence and not a false
+    // rollback alarm.
+    const error = String(r.json.error)
+    expect(error).toMatch(/等这个版本过了等待期再更新一次即可/)
+    expect(error).toMatch(/没有自动重试|no automatic retry/)
+    expect(error).toMatch(/还剩|约|小时|hour/i)
+    expect(error).not.toMatch(/已自动放行重试|already retried|retries once with a one-shot/)
+    expect(error).not.toMatch(/dsh web|plain dsh web/)
+    expect(error).not.toMatch(/未能验证|could not be verified|检查该 profile|inspect this profile/)
+    expect(adds).toHaveLength(1)
+  })
+
+  it('reports the host refusal code as failureCode, not just as text (#909)', async () => {
+    // The desktop manager refuses a self-update before pnpm runs and the
+    // bridge now carries its code (market-self-update). The route has to put
+    // it on the response: a client that only sees text cannot tell this from
+    // an ordinary failure and keeps offering a button that cannot work.
+    advanceNpmLatest('1.2.0')
+    bed.dispose()
+    bed = createTestbed({}, {
+      runPlugin: async () => ({
+        exitCode: 1,
+        timedOut: false,
+        stdout: '',
+        stderr: '市场不能在自己的请求里更新自己 / the market cannot update itself',
+        cancelled: false,
+        wroteNothing: true,
+        refusalCode: 'market-self-update',
+      }),
+      acceptsMarketPnpmFlags: false,
+      probePnpm: () => Promise.resolve(true),
+      provisionPnpm: () => Promise.resolve({ ok: true }),
+      cancelActive: () => false,
+    })
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(502)
+    expect(r.json).toMatchObject({ ok: false, failureCode: 'market-self-update' })
+    expect(String(r.json.error)).toContain('market cannot update itself')
+  })
+
   it('keeps an exact route pin authoritative over a mismatched Desktop resolvedNpmVersion (#496)', async () => {
     // The route already sent name@1.2.0. A host that reports a different
     // resolvedNpmVersion (and whose pnpm tree somehow landed there) must

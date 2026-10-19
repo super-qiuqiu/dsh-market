@@ -11,7 +11,7 @@
 
 装在 DeepSeek Harness 里的插件市场。打开设置 → **插件市场** → 逛一逛，点一下，装好。设置入口在 dsh 0.2.0 及以前位于侧边栏，0.2.1 起移到了账号菜单里。
 
-> 📡 **同一份目录也是一份插件市场索引。** dsh 0.2.1 起，打开 **插件 → 发现（Discover）→ 索引源（Index sources）**，添加 `https://awesome-dsh-plugin.com/index.json`——或 `https://dshmarket.com/index.json`，同一份文档。宿主自己的发现页和 `plugin_market` 智能体工具就能搜索它。
+> 📡 **同一份目录也是一份插件市场索引。** dsh 0.2.1 起，打开 **插件 → 发现（Discover）→ 索引源（Index sources）**，添加 `https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json`。它就是这份列表的 format 1 索引，放在 npm 上分发，所以在哪里都快——dsh 给索引源的时间只有 15 秒，而 GitHub Pages 上的那两份（`https://awesome-dsh-plugin.com/index.json` 与 `https://dshmarket.com/index.json`）在部分网络下会超过。宿主自己的发现页和 `plugin_market` 智能体工具就能搜索它。
 
 ![dsh-market](assets/demo-zh.png)
 

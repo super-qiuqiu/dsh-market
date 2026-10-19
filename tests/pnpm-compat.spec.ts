@@ -62,6 +62,21 @@ describe('classifyPnpmFailure', () => {
     expect(classifyPnpmFailure('ERR_PNPM_FETCH_404 GET https://registry/x: Not Found')?.code).not.toBe('host-incompatible-install')
   })
 
+  it('names the profile write-lock timeout and where the lock is (#914)', () => {
+    // The host's atomic-write waits lockWaitMs (120 s by default) and gives
+    // up with this line. Before the branch, the dialog showed the bare
+    // atomic-write sentence and nothing else — no path, no way out.
+    const output = '停用失败: atomic-write: timed out waiting for the writer lock at C:\\Users\\a\\.dsh\\profiles\\desktop\\package.json.lock'
+    const failure = classifyPnpmFailure(output)
+    expect(failure?.code).toBe('profile-write-lock')
+    expect(failure?.recoverable).toBe(true)
+    // The path travels, and the message says what is safe to do.
+    expect(failure?.message).toContain('package.json.lock')
+    expect(failure?.message).toContain('删掉这个文件')
+    // Ordinary failures stay ordinary.
+    expect(classifyPnpmFailure('ERR_PNPM_FETCH_404 Not Found')?.code).not.toBe('profile-write-lock')
+  })
+
   it('maps each known pnpm failure signature, and only those', () => {
     const hoist = classifyPnpmFailure('ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF  This modules directory was created using a different public-hoist-pattern value. Run "pnpm install" to recreate the modules directory.')
     expect(hoist?.code).toBe('hoist-pattern-diff')

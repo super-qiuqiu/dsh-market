@@ -689,6 +689,48 @@ describe('hasLoadableEntry — carrier bundles (#203)', () => {
     expect(hasLoadableEntry(profile, 'carrier')).toBe(true)
   })
 
+  it('finds a target that lives only in the host install tree (#906)', () => {
+    // A carrier mounting only in-box packages resolves nowhere under the
+    // profile. Before this, verifyActivation called it broken and
+    // validateAddedPlugins uninstalled it right after pnpm had installed it.
+    const profile = writeProfile({})
+    const carrier = join(profile, 'node_modules', 'dsh-mcp-context7')
+    mkdirSync(carrier, { recursive: true })
+    writeFileSync(join(carrier, 'package.json'), '{"dsh":{"bundle":{"patch":"cordis.patch.yml"}}}')
+    writeFileSync(join(carrier, 'cordis.patch.yml'), "- name: '@deepseek-ai/dsh-mcp-client'\n  config: {}\n")
+
+    const host = mkdtempSync(join(tmpdir(), 'dshm-host-'))
+    try {
+      writeFileSync(join(host, 'package.json'), '{"name":"@deepseek-ai/dsh"}')
+      writeLoadable(join(host, 'node_modules', '@deepseek-ai', 'dsh-mcp-client'))
+      // Nothing under the profile resolves; the host's tree does.
+      expect(hasLoadableEntry(profile, 'dsh-mcp-context7')).toBe(false)
+      expect(hasLoadableEntry(profile, 'dsh-mcp-context7', host)).toBe(true)
+      // null means "do not consult the install tree" — the pre-#906 answer.
+      expect(hasLoadableEntry(profile, 'dsh-mcp-context7', null)).toBe(false)
+    } finally {
+      rmSync(host, { recursive: true, force: true })
+    }
+  })
+
+  it('trusts the official scope inside a packaged desktop archive (#676, #906)', () => {
+    // Electron archives cannot be probed reliably by plain fs, so inside
+    // app.asar the name is the evidence — the same rule check.ts already
+    // applies to loader rows.
+    const profile = writeProfile({})
+    const carrier = join(profile, 'node_modules', 'carrier')
+    mkdirSync(carrier, { recursive: true })
+    writeFileSync(join(carrier, 'package.json'), '{"dsh":{"bundle":{"patch":"cordis.patch.yml"}}}')
+    writeFileSync(join(carrier, 'cordis.patch.yml'), "- name: '@deepseek-ai/dsh-mcp-client'\n  config: {}\n")
+    const asarHost = join(tmpdir(), 'some-app', 'resources', 'app.asar', 'dsh')
+    expect(hasLoadableEntry(profile, 'carrier', asarHost)).toBe(true)
+
+    // A non-official name gets no such benefit: without a readable package
+    // there is no evidence it exists.
+    writeFileSync(join(carrier, 'cordis.patch.yml'), "- name: 'third-party-missing'\n  config: {}\n")
+    expect(hasLoadableEntry(profile, 'carrier', asarHost)).toBe(false)
+  })
+
   it('refuses a carrier whose target genuinely does not exist anywhere', () => {
     const profile = writeProfile({})
     const carrier = join(profile, 'node_modules', 'carrier')

@@ -181,6 +181,54 @@ describe('updateNotesFor', () => {
     expect(notes.release?.body).toBe('notes here')
   })
 
+  it('falls back to the commit tail when the release is not newer than the install (#925)', async () => {
+    // The feed is a daily snapshot; the update target is live from npm. So
+    // the snapshot's newest release is often what the user already runs —
+    // here v2.0.0 against an installed 2.0.0 — and showing it next to
+    // "2.0.0 → 2.1.0" describes a change they already have.
+    writeProfile(dir, { 'some-plugin': 'github:o/r' }, [['o/r', SHA_B]])
+    mkdirSync(join(dir, 'node_modules', 'some-plugin'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', 'some-plugin', 'package.json'), '{"name":"some-plugin","version":"2.0.0"}')
+    stubWorld({
+      headSha: SHA_C,
+      payload: {
+        count: 1,
+        updates: {
+          'https://github.com/o/r': {
+            release: { tag: 'v2.0.0', name: 'old news', publishedAt: '2026-08-26T00:00:00Z', url: 'https://github.com/o/r/releases/v2.0.0', body: 'already installed' },
+            commits: COMMITS,
+          },
+        },
+      },
+    })
+    const notes = await updateNotesFor('web', dir, 'some-plugin')
+    // The commit tail is sliced at this install's sha, so it describes what
+    // actually changed since.
+    expect(notes.kind).toBe('commits')
+    expect(notes.commits?.items.map(commit => commit.sha)).toEqual([SHA_C])
+  })
+
+  it('still prefers a release that IS newer than the installed version (#925)', async () => {
+    writeProfile(dir, { 'some-plugin': 'github:o/r' }, [['o/r', SHA_B]])
+    mkdirSync(join(dir, 'node_modules', 'some-plugin'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', 'some-plugin', 'package.json'), '{"name":"some-plugin","version":"1.0.0"}')
+    stubWorld({
+      headSha: SHA_C,
+      payload: {
+        count: 1,
+        updates: {
+          'https://github.com/o/r': {
+            release: { tag: 'v2.0.0', name: 'big rewrite', publishedAt: '2026-08-26T00:00:00Z', url: 'https://github.com/o/r/releases/v2.0.0', body: 'notes here' },
+            commits: COMMITS,
+          },
+        },
+      },
+    })
+    const notes = await updateNotesFor('web', dir, 'some-plugin')
+    expect(notes.kind).toBe('release')
+    expect(notes.release?.body).toBe('notes here')
+  })
+
   it('calls the notes unavailable, not missing, when nothing answers at all', async () => {
     writeProfile(dir, { 'some-plugin': 'github:o/r' })
     stubWorld({ originStatus: 500, headSha: null })

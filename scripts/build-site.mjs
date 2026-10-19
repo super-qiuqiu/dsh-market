@@ -513,9 +513,13 @@ const INDEX_FILE = 'data/market-index.json'
 let indexMirrored = false
 if (fs.existsSync(INDEX_FILE)) {
   try {
-    const mirrored = JSON.parse(fs.readFileSync(INDEX_FILE, 'utf8'))
+    // Written back verbatim, not re-serialized: the document is fetched by a
+    // host whose fetch budget is fixed (15 s), and upstream already ships it
+    // minified for that reason. Pretty-printing here added 20% to the wire.
+    const raw = fs.readFileSync(INDEX_FILE, 'utf8')
+    const mirrored = JSON.parse(raw)
     if (mirrored?.format === 1 && Array.isArray(mirrored.plugins) && mirrored.plugins.length > 0) {
-      fs.writeFileSync(`${OUT}/index.json`, JSON.stringify(mirrored, null, 1) + '\n')
+      fs.writeFileSync(`${OUT}/index.json`, raw.endsWith('\n') ? raw : `${raw}\n`)
       indexMirrored = true
       console.log(`index mirrored: ${mirrored.plugins.length} plugins`)
     } else {

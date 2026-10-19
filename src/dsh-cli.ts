@@ -9,7 +9,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { logEvent } from './log.ts'
@@ -511,6 +511,16 @@ export interface InstallResult {
    * (#897) — and their only true account is "nothing happened".
    */
   wroteNothing?: boolean
+  /**
+   * The host's own refusal code, when it stopped before running pnpm.
+   *
+   * The desktop manager answers with structured codes — `already-installed`,
+   * `bundle-in-use`, `market-self-update` — but they used to survive only as
+   * text inside `stderr`. The update route forwards this to `failureCode`,
+   * so a client can tell "the market cannot update itself here" (#909) from
+   * an ordinary failure without parsing a sentence.
+   */
+  refusalCode?: string
   /** Package names pnpm reported as having ignored build scripts (ndjson). */
   ignoredBuilds?: string[]
   /**
@@ -712,6 +722,35 @@ export function killChild(child: ChildProcess): void {
 /** The child of the operation currently running, for /dsh-market/cancel. */
 let activeChild: ChildProcess | null = null
 let cancelRequested = false
+
+/**
+ * Remove the profile's `package.json.lock` when it is provably ours (#914).
+ *
+ * The dsh CLI writes that lock through the host's atomic-write, whose
+ * `finally` releases it. A timeout kills the whole tree with `taskkill /F`,
+ * so that release never runs and the file outlives the child — and on
+ * Windows the host cannot reliably tell a dead PID from a live one, so every
+ * later change waits the full lock timeout and fails.
+ *
+ * Only a lock naming OUR killed child is removed: that PID is provably dead
+ * because we just killed its whole tree, and it cannot belong to another
+ * operation. A lock naming anything else is left for the classifier to name
+ * (#914), because deleting a live operation's lock would race it.
+ */
+export function clearOwnedProfileLock(profile: string, pid: number | undefined): boolean {
+  if (pid === undefined) return false
+  try {
+    const lock = join(profileDir(profile), 'package.json.lock')
+    const recorded = Number(readFileSync(lock, 'utf8').trim())
+    if (!Number.isInteger(recorded) || recorded !== pid) return false
+    rmSync(lock, { force: true })
+    logEvent('warn', 'install', `the timed-out operation left ${lock} behind (pid ${pid}, already killed with its tree) — removed it so the next change is not blocked (#914)`)
+    return true
+  } catch {
+    // Absent, unreadable, or removed by the child on its way out: nothing to do.
+    return false
+  }
+}
 
 interface ActiveDesktopOperation {
   readonly owner: symbol
@@ -1267,6 +1306,9 @@ export function runDshPlugin(profile: string, pluginArgs: string[]): Promise<Ins
     })
     child.on('close', (code) => {
       clearTimeout(timer)
+      // A timed-out run was killed hard, so the host's lock release in the
+      // child's `finally` never ran. Clear only OUR child's lock (#914).
+      if (timedOut) clearOwnedProfileLock(profile, child.pid)
       progress.active = false
       progress.cancelling = false
       if (activeChild === child) activeChild = null

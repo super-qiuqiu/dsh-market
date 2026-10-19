@@ -4,10 +4,16 @@
  * does. Both 1.0.0 (bundle patch name) and 1.0.1 (client loader id) shipped
  * broken after the dsh-market → dshmarket rename because these are plain
  * strings no compiler checks.
+ *
+ * Also keeps the Plugins-page artwork contract intact: DSH ≥ 0.1.7 reads
+ * top-level package.json.icon and a missing or unpackaged file turns into a
+ * meta.error on the installed row rather than a quiet placeholder.
  */
 import fs from 'node:fs'
+import path from 'node:path'
 
-const name = JSON.parse(fs.readFileSync('package.json', 'utf8')).name
+const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+const name = manifest.name
 
 const failures = []
 
@@ -19,6 +25,41 @@ if (!patch.includes(`name: '${name}'`)) {
 const client = fs.readFileSync('client/client.js', 'utf8')
 if (!client.startsWith(`window.__ModuleLoader__.load({ id: ${JSON.stringify(name)}`)) {
   failures.push(`client/client.js must register __ModuleLoader__ id ${JSON.stringify(name)}`)
+}
+
+/** Max bytes the host accepts for package.json.icon (DSH Plugins page). */
+const ICON_MAX_BYTES = 256 * 1024
+const ICON_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp'])
+
+const icon = manifest.icon
+if (typeof icon !== 'string' || icon.trim() === '') {
+  failures.push('package.json must declare a top-level "icon" path for the Plugins page')
+} else if (path.isAbsolute(icon) || /^[A-Za-z]:[\\/]/.test(icon) || /^(?:https?:)?\/\//i.test(icon)) {
+  failures.push(`package.json.icon must be a relative path inside the package (got ${JSON.stringify(icon)})`)
+} else {
+  const resolved = path.resolve(icon)
+  const root = path.resolve('.')
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    failures.push(`package.json.icon escapes the package root (got ${JSON.stringify(icon)})`)
+  } else if (!ICON_EXTENSIONS.has(path.extname(icon).toLowerCase())) {
+    failures.push(`package.json.icon must be .svg/.png/.jpg/.jpeg/.webp (got ${JSON.stringify(icon)})`)
+  } else if (!fs.existsSync(resolved)) {
+    failures.push(`package.json.icon file missing: ${icon}`)
+  } else {
+    const size = fs.statSync(resolved).size
+    if (size > ICON_MAX_BYTES) {
+      failures.push(`package.json.icon is ${size} bytes; host limit is ${ICON_MAX_BYTES}`)
+    }
+    const shipped = Array.isArray(manifest.files) && manifest.files.some((entry) => {
+      if (typeof entry !== 'string' || entry === '') return false
+      const normalized = entry.replace(/\\/g, '/')
+      const target = icon.replace(/\\/g, '/')
+      return target === normalized || target.startsWith(normalized.replace(/\/?$/, '/'))
+    })
+    if (!shipped) {
+      failures.push(`package.json.files must include ${JSON.stringify(icon)} (or a parent directory) so the Plugins page can load it`)
+    }
+  }
 }
 
 /**

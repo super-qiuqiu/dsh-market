@@ -5,7 +5,7 @@
  * parameter so tests can substitute a recording fake.
  */
 
-import { closeSync, existsSync, lstatSync, openSync, readlinkSync, readSync, rmSync, statSync } from 'node:fs'
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, rmSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { InstallResult, PluginRunner } from './dsh-cli.ts'
 import { findDshInstallDir } from './dsh-install.ts'
@@ -337,12 +337,31 @@ export async function withHoistRecovery(
     //
     // The wait on a fresh release is the one of these where "no retry" leaves
     // the user with nothing to do at all: the plugin IS published, pnpm just
-    // will not take it yet, and the door the market would open on a plain
-    // `dsh web` host is shut here — so say when the same button starts
-    // working, and what to use meanwhile (#852).
-    const note = unavailableOption === RELEASE_AGE_OVERRIDE
-      ? `这个插件的新版本比本 profile 的 minimumReleaseAge（新版本等待期）还新，pnpm 因此拒绝了本次改动（改别的插件也一样）。官方桌面端由应用自己执行安装，不接受市场的临时放行参数（${unavailableOption}），所以这里没有自动重试。**等这个版本过了等待期再更新一次即可**；想现在就更新，可以在普通的 dsh web 里装。 / The plugin's new version is younger than this profile's minimumReleaseAge, so pnpm refused this change (a change to another plugin too). The official desktop app runs the install itself and takes no one-shot bypass from the market (${unavailableOption}), so no automatic retry happens here. **Update again once the version is past the wait**; to update right now, install from plain dsh web.`
-      : `这台宿主（官方桌面端）自己执行安装，不接受市场附加的 pnpm 参数（${unavailableOption}），所以这一步没有自动重试。 / This host (the official desktop app) runs the install itself and takes no pnpm options from the market (${unavailableOption}), so that automatic retry could not be attempted.`
+    // will not take it yet. #852 pointed at plain `dsh web`, but the desktop
+    // profile is host-managed — that door is shut (#909). Say the wait, and
+    // when pnpm named the publish time, how long is left (#919).
+    //
+    // Drop the classifier's "market already retried" sentence first: it was
+    // appended above and is false on this host, and the client prefers
+    // body.error / that classified half over a note tacked on afterwards.
+    let note: string
+    if (unavailableOption === RELEASE_AGE_OVERRIDE) {
+      const classified = classifyPnpmFailure(`${result.stderr}\n${result.stdout}`, result.exitCode)
+      if (classified?.code === 'release-age-violation') {
+        const cut = result.stderr.lastIndexOf(classified.message)
+        if (cut !== -1) {
+          result = { ...result, stderr: result.stderr.slice(0, cut).trimEnd() }
+        }
+      }
+      const windowMs = readMinimumReleaseAgeMs(profile, profileDirectory)
+      const remaining = windowMs === null
+        ? null
+        : remainingReleaseAgeWait(`${result.stderr}\n${result.stdout}`, Date.now(), windowMs)
+      const wait = remaining === null ? { zh: '', en: '' } : formatRemainingReleaseAgeWait(remaining)
+      note = `这个插件的新版本比本机的新版本等待期还新，所以现在装不了（改别的插件也会被拦住）。官方桌面端不接受临时放行，所以这里没有自动重试。**等这个版本过了等待期再更新一次即可**${wait.zh}。过了等待期后再在市场点一次更新。 / The plugin's new version is younger than this machine's fresh-release wait, so the install was refused (a change to another plugin too). The official desktop app takes no one-shot bypass, so no automatic retry happens here. **Update again once the version is past the wait**${wait.en}. Try the market update again after the wait.`
+    } else {
+      note = `这台宿主（官方桌面端）自己执行安装，不接受市场附加的 pnpm 参数（${unavailableOption}），所以这一步没有自动重试。 / This host (the official desktop app) runs the install itself and takes no pnpm options from the market (${unavailableOption}), so that automatic retry could not be attempted.`
+    }
     result = { ...result, stderr: `${result.stderr}\n\n${note}` }
   }
   // pnpm can append a second rule even on success (#883, #878), including
@@ -421,6 +440,95 @@ const DIAGNOSTICS_TAIL_BYTES = 8192
  */
 export function pnpmNeverStarted(result: InstallResult): boolean {
   return classifyPnpmFailure(`${result.stderr}\n${result.stdout}`, result.exitCode)?.code === 'pnpm-unusable'
+}
+
+/**
+ * Whether pnpm refused a too-young release without writing to the profile.
+ *
+ * Same nature as wroteNothing / pnpmNeverStarted for the update route's
+ * rollback (#919): pnpm DID start, read the lockfile, then exited 1 on
+ * ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION (or the sibling mature-match /
+ * resolution-policy shapes). Nothing was installed or removed, so restoring
+ * "the previous build" is alarm about an untouched profile — and on the
+ * official desktop bridge it pairs every wait with a false
+ * "restoration could not be verified" line that covers the real reason.
+ * @param result - the failed run.
+ * @returns true when the failure is pnpm's fresh-release gate.
+ */
+export function pnpmRefusedYoungRelease(result: InstallResult): boolean {
+  return classifyPnpmFailure(`${result.stderr}\n${result.stdout}`, result.exitCode)?.code === 'release-age-violation'
+}
+
+/** pnpm's default minimumReleaseAge window (1440 minutes). */
+const DEFAULT_RELEASE_AGE_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The profile's fresh-release wait window in ms (#919).
+ *
+ * Reads `minimumReleaseAge` (minutes) from pnpm-workspace.yaml, then
+ * `minimum-release-age` from `.npmrc`. A key that is present but not a
+ * number returns null — callers must not invent a remaining wait. When
+ * neither file names the key, pnpm's default 1440 minutes applies.
+ */
+export function readMinimumReleaseAgeMs(profile: string, explicitDir?: string): number | null {
+  const dir = profileDir(profile, explicitDir)
+  const fromWorkspace = readReleaseAgeMinutesFromWorkspace(dir)
+  if (fromWorkspace === 'invalid') return null
+  if (typeof fromWorkspace === 'number') return fromWorkspace * 60 * 1000
+  const fromNpmrc = readReleaseAgeMinutesFromNpmrc(dir)
+  if (fromNpmrc === 'invalid') return null
+  if (typeof fromNpmrc === 'number') return fromNpmrc * 60 * 1000
+  return DEFAULT_RELEASE_AGE_WINDOW_MS
+}
+
+/** @returns minutes, `'invalid'` when the key is present but unreadable, or null when absent. */
+function readReleaseAgeMinutesFromWorkspace(dir: string): number | 'invalid' | null {
+  let yaml: string
+  try { yaml = readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8') } catch { return null }
+  if (!/^minimumReleaseAge\s*:/m.test(yaml)) return null
+  const match = /^minimumReleaseAge:\s*(\d+)\s*(?:#.*)?$/m.exec(yaml)
+  if (match === null) return 'invalid'
+  const minutes = Number(match[1])
+  return Number.isFinite(minutes) ? minutes : 'invalid'
+}
+
+/** @returns minutes, `'invalid'` when the key is present but unreadable, or null when absent. */
+function readReleaseAgeMinutesFromNpmrc(dir: string): number | 'invalid' | null {
+  let npmrc: string
+  try { npmrc = readFileSync(join(dir, '.npmrc'), 'utf8') } catch { return null }
+  if (!/^minimum-release-age\s*=/m.test(npmrc)) return null
+  const match = /^minimum-release-age\s*=\s*(\d+)\s*(?:#.*)?$/m.exec(npmrc)
+  if (match === null) return 'invalid'
+  const minutes = Number(match[1])
+  return Number.isFinite(minutes) ? minutes : 'invalid'
+}
+
+/**
+ * How long is left in the fresh-release wait, when pnpm named the publish
+ * time in its refusal (#919). Null when the output has no usable timestamp.
+ */
+export function remainingReleaseAgeWait(
+  output: string,
+  now = Date.now(),
+  windowMs = DEFAULT_RELEASE_AGE_WINDOW_MS,
+): number | null {
+  const match = /published at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)/i.exec(output)
+  if (match === null) return null
+  const published = Date.parse(match[1]!)
+  if (!Number.isFinite(published)) return null
+  return Math.max(0, published + windowMs - now)
+}
+
+/** Human remaining-wait fragment for the desktop release-age note. */
+function formatRemainingReleaseAgeWait(remainingMs: number): { zh: string, en: string } {
+  if (remainingMs <= 0) {
+    return { zh: '（现在再试一次即可）', en: ' (try again now)' }
+  }
+  const hours = Math.max(1, Math.ceil(remainingMs / (60 * 60 * 1000)))
+  return {
+    zh: `（大约还剩 ${hours} 小时）`,
+    en: ` (about ${hours} hour${hours === 1 ? '' : 's'} left)`,
+  }
 }
 
 /**
@@ -551,7 +659,10 @@ export async function validateAddedPlugins(
     const packageDir = join(dir, 'node_modules', n)
     // hasLoadableEntry, not entryArtifactExists: carrier bundles legitimately
     // ship no entry of their own (#103) and must not be uninstalled here.
-    if (!hasDshManifest(packageDir) || !hasLoadableEntry(dir, n)) {
+    // The host install tree is passed too (#906): a carrier mounting only
+    // in-box packages resolves nowhere under the profile, and judging it by
+    // that alone deleted a package the host had just installed correctly.
+    if (!hasDshManifest(packageDir) || !hasLoadableEntry(dir, n, hostDirectory ?? findDshInstallDir())) {
       removedBroken.push(n)
       await removeAndReconcile(run, profile, dir, n, hostDirectory)
       continue

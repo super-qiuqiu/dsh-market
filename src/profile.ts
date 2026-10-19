@@ -5,9 +5,11 @@
  */
 
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { JSON_SCHEMA, load } from 'js-yaml'
+import { findDshInstallDir } from './dsh-install.ts'
 import { resolveDshHome } from './home-paths.ts'
 import { githubRemoteIdentities, githubRepoIdentities, hostedRepoKey, isGenerationLink, isGitHostedSpec, repoOfTarget } from './sources.ts'
 
@@ -1340,7 +1342,7 @@ export function conflictingEntryIds(
  * @param profileDirectory - resolved profile directory (host-authoritative under Desktop).
  * @param name - installed package name.
  */
-export function hasLoadableEntry(profileDirectory: string, name: string): boolean {
+export function hasLoadableEntry(profileDirectory: string, name: string, hostDirectory?: string | null): boolean {
   const dir = join(profileDirectory, 'node_modules', name)
   if (entryArtifactExists(dir)) return true
   // A carrier is only sound when something it mounts is itself loadable.
@@ -1353,11 +1355,39 @@ export function hasLoadableEntry(profileDirectory: string, name: string): boolea
   // exiting 0 was immediately followed by the market removing what it had
   // just, correctly, installed.
   const workspaceRoot = dirname(profileDirectory)
-  return bundlePatchTargets(dir)
-    .filter(target => target !== name)
-    .some(target => entryArtifactExists(join(profileDirectory, 'node_modules', target))
-      || entryArtifactExists(join(dir, 'node_modules', target))
-      || entryArtifactExists(join(workspaceRoot, 'node_modules', target)))
+  const targets = bundlePatchTargets(dir).filter(target => target !== name)
+  if (targets.some(target => entryArtifactExists(join(profileDirectory, 'node_modules', target))
+    || entryArtifactExists(join(dir, 'node_modules', target))
+    || entryArtifactExists(join(workspaceRoot, 'node_modules', target)))) return true
+  // #906: the host's OWN packages live in its install tree, not in any
+  // profile node_modules — `<install>/dsh/node_modules/...`, often inside
+  // app.asar. A carrier whose patch mounts nothing but in-box packages
+  // (@deepseek-ai/dsh-mcp-client and the like) therefore failed every root
+  // above, was reported "broken", and — through validateAddedPlugins — was
+  // uninstalled right after a successful install. `undefined` resolves the
+  // install dir lazily (only carriers pay for it); `null` means "do not look".
+  //
+  // Inside app.asar the probe is blind for EVERY @deepseek-ai/ name (the
+  // same measurement behind #676), so there identity decides instead of the
+  // filesystem — the host publishes that scope, and our own composer loads
+  // those packages from the archive at boot.
+  const host = hostDirectory === undefined ? findDshInstallDir() : hostDirectory
+  if (host === null || targets.length === 0) return false
+  const packaged = /[/\\]app\.asar[/\\]/iu.test(host)
+  return targets.some(target => packaged && target.startsWith('@deepseek-ai/')
+    || packageResolvableFrom(join(host, 'package.json'), target))
+}
+
+/** Whether `target` resolves from the host's own dependency tree. */
+function packageResolvableFrom(anchorPackageJson: string, target: string): boolean {
+  try {
+    const paths = createRequire(anchorPackageJson).resolve.paths(target) ?? []
+    return paths.some(searchPath => existsSync(join(searchPath, target, 'package.json')))
+  } catch {
+    // An unreadable anchor says nothing about the target: treat as absent
+    // rather than loadable, so the caller keeps its conservative answer.
+    return false
+  }
 }
 
 /** Plugin subdirectories (depth 2) of a collection checkout, as relative paths. */

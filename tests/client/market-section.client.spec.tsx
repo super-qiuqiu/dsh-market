@@ -6561,6 +6561,67 @@ describe('standing restart notice for host-reported pending plugins', () => {
   })
 })
 
+describe('a shell that runs the host as its child process owns the restart', () => {
+  // A Tauri/Electron shell that spawned `dsh web` restarts by stopping the
+  // process it started and relaunching its own window. The market's own route
+  // spawns a detached helper instead — a second lifecycle competing with the
+  // shell's for one port. Where the shell publishes its bridge, the button
+  // asks the shell and never touches the host route.
+  function stubStatus(extra: Record<string, unknown> = {}) {
+    const installed = { 'dsh-loop': '^1.0.0' }
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web', installed, live: [],
+        activation: { 'dsh-loop': { state: 'restart', reasons: ['in the bundle layer'], bundle: true, hot: false } },
+      },
+      '/dsh-market/status': { active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed, ...extra },
+      '/dsh-market/updates': { updates: {} },
+    })
+  }
+
+  afterEach(() => { Reflect.deleteProperty(window, '__dshHostShell') })
+
+  it('asks the shell, and never posts to the host restart route', async () => {
+    const shellRestart = vi.fn()
+    Reflect.set(window, '__dshHostShell', { restart: shellRestart })
+    stubStatus()
+    render(<MarketSection {...props()} />)
+    await waitFor(() => { expect(screen.getAllByText(re(en.restartBanner)).length).toBeGreaterThan(0) })
+
+    fireEvent.click(screen.getByRole('button', { name: en.restartNow }))
+
+    await waitFor(() => { expect(shellRestart).toHaveBeenCalledTimes(1) })
+    expect(fetchCalls.some(call => call.path === '/dsh-market/restart')).toBe(false)
+  })
+
+  it('falls back to the host route when the shell bridge is absent', async () => {
+    stubStatus()
+    render(<MarketSection {...props()} />)
+    await waitFor(() => { expect(screen.getAllByText(re(en.restartBanner)).length).toBeGreaterThan(0) })
+
+    fireEvent.click(screen.getByRole('button', { name: en.restartNow }))
+
+    await waitFor(() => {
+      expect(fetchCalls.some(call => call.path === '/dsh-market/restart' && call.method === 'POST')).toBe(true)
+    })
+  })
+
+  it('falls back to the host route when the shell bridge throws', async () => {
+    // A bridge that throws is not a restart. Silently reporting success would
+    // leave the page "restarting" forever against a host that never stopped.
+    Reflect.set(window, '__dshHostShell', { restart: () => { throw new Error('bridge is gone') } })
+    stubStatus()
+    render(<MarketSection {...props()} />)
+    await waitFor(() => { expect(screen.getAllByText(re(en.restartBanner)).length).toBeGreaterThan(0) })
+
+    fireEvent.click(screen.getByRole('button', { name: en.restartNow }))
+
+    await waitFor(() => {
+      expect(fetchCalls.some(call => call.path === '/dsh-market/restart' && call.method === 'POST')).toBe(true)
+    })
+  })
+})
+
 describe('boot-scoped update reminder dismissals (#419)', () => {
   const installed = {
     dshmarket: '^1.38.0',

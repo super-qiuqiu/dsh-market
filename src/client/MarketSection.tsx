@@ -3570,6 +3570,20 @@ export function MarketSection(props: MarketSectionProps) {
     setRestarting(true)
     setInstallError(null)
     setRecovery(null)
+    // A shell that runs this host as its own child process owns the lifecycle:
+    // it stops the process it started and relaunches its window. The helper
+    // below would be a second lifecycle competing with it — two processes, one
+    // port — so where the shell is there, ask it instead of spawning anything.
+    const shellRestart = typeof window === 'undefined' ? undefined : window.__dshHostShell?.restart
+    if (typeof shellRestart === 'function') {
+      try {
+        shellRestart()
+        return
+      } catch {
+        // A shell that published the bridge and then threw is not a restart:
+        // fall through to the host's own route, which is the pre-existing path.
+      }
+    }
     const awaitNewBoot = () => {
       const deadline = Date.now() + 60000
       const poll = () => {

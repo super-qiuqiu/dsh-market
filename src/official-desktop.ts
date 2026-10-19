@@ -28,6 +28,32 @@ function failure(message: string, exitCode = 1): InstallResult {
   return { exitCode, timedOut: false, stdout: '', stderr: message, cancelled: false }
 }
 
+/**
+ * The host's own pre-install diagnostic, when it wrote one.
+ *
+ * On dsh 0.2.1 the manager runs checks of its own before pnpm starts and
+ * reports them as `dsh: …` in an `operation-error`'s `diagnostic` (#912).
+ */
+function hostDiagnostic(error: unknown): string | undefined {
+  const diagnostic = (error as { diagnostic?: unknown } | null | undefined)?.diagnostic
+  return typeof diagnostic === 'string' && diagnostic.startsWith('dsh: ') ? diagnostic : undefined
+}
+
+/**
+ * Whether the host stopped before pnpm ran, on a check of its own (#912).
+ *
+ * `checkGithubConnection` refuses an install after five seconds without
+ * touching the profile; so does the compatibility gate (`installation
+ * rejected:`). Neither is a write, and treating them as one sent the update
+ * route into a rollback of an untouched profile — a false "restoration
+ * could not be verified" alarm that buried the real reason.
+ */
+function prePnpmHostFailure(result: ManagedResult): boolean {
+  const diagnostic = hostDiagnostic(result.error)
+  return diagnostic !== undefined
+    && /^dsh: (?:connection to \S+ timed out|installation rejected:)/.test(diagnostic)
+}
+
 function detail(error: unknown): string {
   if (typeof error === 'string') return error
   if (error instanceof Error) return error.message
@@ -38,6 +64,15 @@ function detail(error: unknown): string {
   if (copy !== undefined) return `${copy.zh} / ${copy.en} (${code})`
   const message = (error as { message?: unknown }).message
   if (typeof message === 'string' && message !== '') return message
+  const diagnostic = hostDiagnostic(error)
+  if (diagnostic !== undefined) {
+    if (/^dsh: connection to \S+ timed out/.test(diagnostic)) {
+      // The 5 s is the host's own pre-install reachability check, not the
+      // install failing: say which knob moves it (#912).
+      return `${diagnostic}\n\n宿主在开始安装前自己检查了 GitHub 的连通性，5 秒内没连上就放弃了这次安装，pnpm 还没有开始，profile 没有任何改动。如果手动 \`git ls-remote\` 能连上（例如已给 git 配好代理或换过 TLS 后端），把宿主 plugin-manager 的 \`githubConnectionTimeoutMs\` 调大再试（cordis.yml 里该插件的 config）。 / the host checks GitHub reachability before installing and gave up after five seconds; pnpm never started and the profile is unchanged. If git itself can reach GitHub (a proxy, or a different TLS backend), raise the host plugin-manager's \`githubConnectionTimeoutMs\` (its config in cordis.yml) and try again.`
+    }
+    return diagnostic
+  }
   return JSON.stringify(error)
 }
 
@@ -97,7 +132,14 @@ function selfUpdateMessage(spec: string): string {
   const at = spec.indexOf('@', 1)
   const version = at === -1 ? '' : spec.slice(at + 1)
   const target = version === '' ? spec : `${registryNameOf(spec) ?? spec}@${version}`
-  return `市场不能在自己的请求里先卸载自己：桌面端的移除会先把市场从正在运行的组合里摘掉，补装那一步就再也执行不到了（#900）。请在桌面端的「设置 → 插件」里更新市场${version === '' ? '' : ` 到 ${version}`}，或完全退出 DSH 后在终端执行 \`dsh plugin --profile desktop add ${target}\`。 / The market cannot remove itself to update: the desktop app unloads it from the running composition first, so the reinstall never runs (#900). Update it from the desktop app's Settings → Plugins${version === '' ? '' : ` (to ${version})`}, or quit DSH completely and run \`dsh plugin --profile desktop add ${target}\` in a terminal.`
+  // Two paths that used to be named here do not exist on dsh 0.2.1, and a
+  // reporter proved both (#909): `dsh plugin --profile desktop` is refused
+  // outright, and the app's Settings → Plugins has no update entry — its
+  // manager refuses re-adding a package that is already declared. The only
+  // route left is pnpm run against the profile with the app fully quit, which
+  // is what the reporter verified. `--config.minimum-release-age=0` is the
+  // market's own one-shot flag, spelled so it works in every shell.
+  return `市场不能在自己的请求里更新自己：桌面端的移除会先把市场从正在运行的组合里摘掉，补装那一步就执行不到了（#900），而应用内的「设置 → 插件」没有更新入口（#909）。要更新${version === '' ? '' : ` 到 ${version}`}：完全退出 DSH Desktop，在 profile 目录执行 \`pnpm add ${target} --config.minimum-release-age=0\`（没有 pnpm 时用 \`npx pnpm add …\`），然后重新启动。Windows 的 profile 一般在 %USERPROFILE%\\.dsh\\profiles\\desktop。 / The market cannot update itself: the desktop app unloads it from the running composition first, so the reinstall never runs (#900), and the app's Settings → Plugins has no update entry (#909). To update${version === '' ? '' : ` to ${version}`}: quit DSH Desktop completely, run \`pnpm add ${target} --config.minimum-release-age=0\` in the profile directory (use \`npx pnpm add …\` if pnpm is not installed), then start DSH again. On Windows the profile is usually %USERPROFILE%\\.dsh\\profiles\\desktop.`
 }
 
 /** The manager's own refusal code, whether it was returned or thrown. */
@@ -306,12 +348,21 @@ export function createOfficialDesktopRuntime(
         cancelled: current.cancelled || result.application === 'cancelled',
         // No package result means the manager stopped before it ran pnpm: the
         // profile is untouched, and the route must not try to "restore" it.
-        wroteNothing: !ok && result.packageResult === undefined,
+        // A pre-install host check (#912) is the same shape even when the
+        // manager attached a package result to its refusal.
+        wroteNothing: !ok && (result.packageResult === undefined || prePnpmHostFailure(result)),
+        // The manager's own code, kept machine-readable (#909): a client can
+        // tell a self-update refusal from an ordinary failure.
+        ...(ok ? {} : { refusalCode: managementCode(result.error) }),
       }
     }, (error): InstallResult => {
       const message = detail(error)
       progress.error = message
-      return { ...failure(message, 127), wroteNothing: managementCode(error) !== undefined }
+      return {
+        ...failure(message, 127),
+        wroteNothing: managementCode(error) !== undefined,
+        ...(managementCode(error) === undefined ? {} : { refusalCode: managementCode(error) }),
+      }
     }).finally(() => {
       progress.active = false
       progress.cancelling = false

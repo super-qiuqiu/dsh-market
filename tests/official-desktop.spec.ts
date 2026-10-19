@@ -231,8 +231,15 @@ describe('official Electron profile runtime', () => {
       expect(result.wroteNothing).toBe(true)
       expect(service.removeBundle).not.toHaveBeenCalled()
       expect(service.installBundle).toHaveBeenCalledTimes(1)
-      expect(result.stderr).toContain('Settings → Plugins')
-      expect(result.stderr).toContain(`dsh plugin --profile desktop add ${spec}`)
+      // Machine-readable (#909), so a client can tell this apart from an
+      // ordinary failure instead of parsing the sentence.
+      expect(result.refusalCode).toBe('market-self-update')
+      // The two paths named before 1.66.40 do not exist on dsh 0.2.1: the
+      // CLI refuses `--profile desktop`, and Settings → Plugins has no update
+      // entry. Point at the one route a reporter verified (#909).
+      expect(result.stderr).toContain(`pnpm add ${spec} --config.minimum-release-age=0`)
+      expect(result.stderr).toContain('#909')
+      expect(result.stderr).not.toContain('dsh plugin --profile desktop')
     } finally {
       await runtime.dispose()
     }
@@ -291,6 +298,30 @@ describe('official Electron profile runtime', () => {
       const result = await runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
       expect(result.exitCode).toBe(1)
       expect(result.wroteNothing).toBe(false)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('treats a pre-install host check as an untouched profile, and names the knob (#912)', async () => {
+    // The host checks github.com reachability before it runs pnpm and gives
+    // up after five seconds. That is not a write — but the manager attaches a
+    // package result, so wroteNothing used to be false and the update route
+    // "restored" a profile nothing had touched (#912).
+    const service = manager()
+    service.installBundle.mockResolvedValueOnce({
+      application: 'failed',
+      error: { code: 'operation-error', diagnostic: 'dsh: connection to github.com timed out after 5000ms' },
+      packageResult: { exitCode: 1, output: '' },
+    })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      const result = await runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
+      expect(result.exitCode).toBe(1)
+      expect(result.wroteNothing).toBe(true)
+      // The five seconds are the host's own check, not the install failing.
+      expect(result.stderr).toContain('githubConnectionTimeoutMs')
+      expect(result.stderr).toContain('profile 没有任何改动')
     } finally {
       await runtime.dispose()
     }
