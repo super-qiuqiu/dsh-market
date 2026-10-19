@@ -591,8 +591,8 @@
          text-overflow:ellipsis;min-height:20px;border-radius:5px;
          padding:1px 7px;font-size:11px;line-height:18px;white-space:nowrap;
          background:var(--dsw-alias-bg-layer-2,#f3f4f6);color:var(--dsw-alias-label-tertiary,#8b93a1)}
-.metaTagFork{color:var(--dsw-alias-state-warning-primary,#b45309);
-  background:color-mix(in srgb,var(--dsw-alias-state-warning-primary,#b45309) 8%,transparent);}
+.metaTagFork{color:var(--dsw-alias-state-warn-primary,#b45309);
+  background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#b45309) 8%,transparent);}
 .forkChip{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;
   font-weight:500;}
 .forkChip a{color:inherit;text-decoration:none;}
