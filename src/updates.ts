@@ -363,7 +363,20 @@ async function tagVersion(name: string, tag: string): Promise<string | null> {
 export async function fetchNpmLatest(name: string): Promise<string | null> {
   try {
     const meta = (await fetchJson(npmUrl(`${encodeURIComponent(name)}/latest`))) as { version?: string }
-    return typeof meta.version === 'string' ? meta.version : null
+    if (typeof meta.version === 'string') return meta.version
+  } catch {
+    // Fall through to the full packument (#932).
+  }
+  // #932: the `/latest` shortcut can fail on its own — measured HTTP 429 from
+  // registry.npmjs.org while the full packument answered 200 with the same
+  // dist-tag. Returning null there made a fresh install fall back to the bare
+  // name, and pnpm's fresh-release hold then installed an OLDER version than
+  // the catalog and the confirmation screen had just shown. The packument is
+  // a bigger read, so it is only asked when the shortcut failed.
+  try {
+    const doc = (await fetchJson(npmUrl(encodeURIComponent(name)))) as { 'dist-tags'?: { latest?: unknown } }
+    const latest = doc['dist-tags']?.latest
+    return typeof latest === 'string' ? latest : null
   } catch {
     return null
   }

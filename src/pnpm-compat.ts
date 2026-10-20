@@ -16,7 +16,7 @@
 
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-
+import { CHINA_NPM_REGISTRY } from './regions.ts'
 
 /**
  * Decide the argv for a `dsh plugin <add|remove> …` call in the given profile.
@@ -46,7 +46,7 @@ export const HOST_NAMESPACE_RE = /^@deepseek-ai\//
 export interface PnpmFailure {
   code: 'adding-to-root' | 'not-a-workspace' | 'hoist-pattern-diff' | 'pnpm-missing' | 'release-age-violation'
     | 'ignored-builds' | 'git-prepare-not-allowed' | 'git-prepare-failed' | 'tarball-url-mismatch'
-    | 'fetch-404' | 'no-matching-version' | 'transient-network' | 'fetch-timeout'
+    | 'fetch-404' | 'no-matching-version' | 'exact-version-missing' | 'transient-network' | 'fetch-timeout'
     | 'unexpected-store' | 'patch-failed' | 'unused-patch' | 'missing-tarball-integrity' | 'windows-file-locked'
     | 'profile-file-locked'
     | 'pnpm-unusable' | 'missing-local-dependency' | 'unparseable-build-key' | 'native-oom' | 'ssh-auth-failed'
@@ -87,6 +87,24 @@ export interface PnpmFailure {
  */
 export function isTransientPnpmFailure(output: string): boolean {
   return /ERR_PNPM_FETCH_5\d\d|ERR_PNPM_META_FETCH_FAIL|FetchError|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network timeout/i.test(output)
+}
+
+/**
+ * China download route reset a package tarball mid-download (#926).
+ *
+ * Same-argv retry (#83) hits the same host again, so the generic "try again
+ * shortly" advice is wrong. Matched on ONE line: the China npm registry
+ * tarball URL and the reset must appear together — a China-mirror `.tgz`
+ * mention plus an unrelated `ECONNRESET` elsewhere (e.g. codeload) must not
+ * push the user to switch Download region.
+ */
+function isChinaMirrorTarballReset(output: string): boolean {
+  const hostPath = CHINA_NPM_REGISTRY.replace(/^https?:\/\//i, '')
+  const escaped = hostPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(
+    `${escaped}/\\S+/-/\\S+\\.tgz[^\\n]*(?:ECONNRESET|socket hang up)`,
+    'i',
+  ).test(output)
 }
 
 /**
@@ -578,19 +596,52 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
   // error code, so the classifier names it separately and the #289 retry
   // shares it via install.ts's gate. Real output (pnpm 12.4.1): see
   // tests/pnpm-compat.spec.ts, which pins this wording.
+  //
+  // #927: when the request is an EXACT version (name@1.2.3) that this
+  // registry cannot see yet — often a mirror whose `/latest` moved ahead of
+  // its packument — the generic "withdrawn or never published" sentence is
+  // wrong. That shape gets its own code so withHoistRecovery can retry the
+  // same argv once (re-fetch packument) and the UI can say "not synced yet".
   if (output.includes('ERR_PNPM_NO_MATCHING_VERSION')) {
-    const pkg = /No matching version found for\s+((?:@[^/\s]+\/)?[^@\s]+)@/.exec(output)?.[1]
+    const asked = /No matching version found for\s+((?:@[^/\s]+\/)?[^@\s]+)@([^\s]+)/.exec(output)
+    const pkg = asked?.[1]
       ?? /GET\s+\S*\/([^/\s]+):/.exec(output)?.[1].replace(/%2[Ff]/g, '/')
+    const requested = asked?.[2]
     const zh = pkg === undefined ? '' : `（${pkg}）`
     const en = pkg === undefined ? '' : ` (${pkg})`
     const hostPeer = pkg !== undefined && HOST_NAMESPACE_RE.test(pkg)
+    if (hostPeer) {
+      return {
+        code: 'no-matching-version',
+        recoverable: false,
+        pkg,
+        message: `插件声明依赖的宿主包${zh}在 registry 上没有满足其版本范围的发布版（宿主运行时会自带它，npm 上不会出现这个版本）。市场会自动重试一次，放行这条 peer 依赖 / a plugin's declared host peer${en} has no published version satisfying its range — the runtime provides it, so npm carries no such version. The market retries once with that peer exempted from auto-install`,
+      }
+    }
+    const exact = requested !== undefined
+      && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(requested)
+    if (exact) {
+      const pin = pkg === undefined ? requested : `${pkg}@${requested}`
+      const latest = pkg === undefined
+        ? undefined
+        : new RegExp(
+          `The latest release of\\s+${pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+is\\s+"([^"]+)"`,
+          'i',
+        ).exec(output)?.[1]
+      const latestZh = latest === undefined ? '' : `（它目前看到的最新是 ${latest}）`
+      const latestEn = latest === undefined ? '' : ` (it currently reports latest as ${latest})`
+      return {
+        code: 'exact-version-missing',
+        recoverable: false,
+        ...(pkg === undefined ? {} : { pkg }),
+        message: `当前下载线路暂时找不到精确版本 ${pin}${latestZh}。常见原因是线路还没同步到刚发布的版本，不等于这个版本不存在。已自动重试一次仍失败——请稍后再试；若下载区域是中国大陆，也可改成「全球」后再试 / this download route cannot see the exact version ${pin} yet${latestEn}. Often the route has not synced a just-published release — that does not mean the version is missing from npm. One automatic retry failed too — try again shortly; if Download region is China mainland, you can also switch it to Global and retry`,
+      }
+    }
     return {
       code: 'no-matching-version',
       recoverable: false,
-      pkg,
-      message: hostPeer
-        ? `插件声明依赖的宿主包${zh}在 registry 上没有满足其版本范围的发布版（宿主运行时会自带它，npm 上不会出现这个版本）。市场会自动重试一次，放行这条 peer 依赖 / a plugin's declared host peer${en} has no published version satisfying its range — the runtime provides it, so npm carries no such version. The market retries once with that peer exempted from auto-install`
-        : `插件声明的一个依赖版本范围在 registry 上没有可满足的版本${zh}，通常是该版本被弃用或从未发布 / a dependency of this plugin declared a version range with no matching release on the registry${en} — the range resolves to nothing (withdrawn or never published)`,
+      ...(pkg === undefined ? {} : { pkg }),
+      message: `插件声明的一个依赖版本范围在 registry 上没有可满足的版本${zh}，通常是该版本被弃用或从未发布 / a dependency of this plugin declared a version range with no matching release on the registry${en} — the range resolves to nothing (withdrawn or never published)`,
     }
   }
   // #808 by @Tofu707: the profile's own pnpm-lock.yaml is what is wrong, in
@@ -746,6 +797,16 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
   // a plain retry to succeed seconds later. withHoistRecovery retries once;
   // this message covers the case where the retry lost too.
   if (isTransientPnpmFailure(output)) {
+    // Keep code `transient-network` so withHoistRecovery still does the #83
+    // same-argv retry; only the final message changes when that retry lost
+    // against the China mirror's tarball host (#926).
+    if (isChinaMirrorTarballReset(output)) {
+      return {
+        code: 'transient-network',
+        recoverable: false,
+        message: '中国大陆下载线路在拉这个安装包时被断开了。再走同一条线路通常没用。打开设置，把「下载区域」改成「全球」，然后再装一次 / the China mainland download route was interrupted while fetching this package. Trying the same route again usually will not help. Open Settings, switch Download region to Global, and install again',
+      }
+    }
     return {
       code: 'transient-network',
       recoverable: false,

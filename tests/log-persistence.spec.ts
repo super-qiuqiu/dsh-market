@@ -3,11 +3,16 @@
  * sanitized, and the export carries prior sessions alongside this one.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { configurePersistentLog, exportLogs, logEvent, readPersistentLog } from '../src/log.ts'
+
+vi.mock('node:os', async importOriginal => {
+  const os = await importOriginal<typeof import('node:os')>()
+  return { ...os, homedir: vi.fn(os.homedir) }
+})
 
 let home: string
 let logFile: string
@@ -17,7 +22,107 @@ beforeEach(() => {
 })
 afterEach(() => {
   configurePersistentLog(null)
+  vi.mocked(homedir).mockReset()
   rmSync(home, { recursive: true, force: true })
+})
+
+describe('home path redaction (#907)', () => {
+  const windowsHome = String.raw`C:\Users\Alice.test+(dev)`
+  const variants = [
+    [String.raw`C:\Users\Alice.test+(dev)\private`, String.raw`~\private`],
+    ['C:/Users/Alice.test+(dev)/private', '~/private'],
+    [String.raw`C:/Users\Alice.test+(dev)/private`, '~/private'],
+    ['c:/uSeRs/ALICE.TEST+(DEV)/private', '~/private'],
+  ] as const
+
+  it.each(variants)('masks %s on write, in headers and snapshots, and in historical logs', (path, masked) => {
+    vi.mocked(homedir).mockReturnValue(windowsHome)
+    configurePersistentLog(logFile)
+    logEvent('info', 'home-907', `link:${path}\nforged\r\u0000 sk-abcdefgh12345678 api-key=secret`)
+    const entry = JSON.parse(readPersistentLog(logFile)[0]!) as { detail: string }
+    expect(entry.detail).toBe(`link:${masked}forged sk-*** api-key=***`)
+    expect(exportLogs({ host: path }, [`dependency: link:${path}`])).toContain(`host: ${masked}`)
+    expect(exportLogs({}, [`dependency: link:${path}`])).toContain(`dependency: link:${masked}`)
+    expect(exportLogs({})).toContain(`home-907: link:${masked}forged sk-*** api-key=***`)
+
+    // Simulate an old process that persisted the original, unsanitized data.
+    const historical = JSON.stringify({ detail: `link:${path} token=secret` })
+    writeFileSync(logFile, historical + '\n')
+    const exported = exportLogs({}, [], readPersistentLog(logFile))
+    const prior = exported.split('## previous sessions (persisted log)\n')[1]!.split('\n')[0]!
+    expect(prior).not.toContain('Alice')
+    expect(prior).not.toContain('ALICE')
+    expect(prior).not.toContain('secret')
+    expect(prior).toContain(`link:${JSON.stringify(masked).slice(1, -1)}`)
+    // Exporting older data does not rewrite the user's log file.
+    expect(readFileSync(logFile, 'utf8')).toBe(historical + '\n')
+  })
+
+  it('matches only the home directory, including a bare home, and leaves other paths and text intact', () => {
+    vi.mocked(homedir).mockReturnValue(windowsHome)
+    const unchanged = [
+      'link:C:/Users/Bob/private', 'link:D:/work/private',
+      'C:/Users/Alice.test+(dev)-other/private', 'C:/Users/Alice.test+(dev).backup/private',
+      'prefixC:/Users/Alice.test+(dev)/private', 'D:/copy/C:/Users/Alice.test+(dev)/private',
+      'Alice.test+(dev) is a user',
+    ]
+    expect(exportLogs({}, unchanged)).toContain(unchanged.join('\n'))
+    expect(exportLogs({}, [`home: "${windowsHome}"`, `(${windowsHome})`, windowsHome])).toContain('home: "~"\n(~)\n~')
+  })
+
+  it('keeps POSIX homes case-sensitive and does not reinterpret backslashes', () => {
+    vi.mocked(homedir).mockReturnValue('/home/alice.test+(dev)')
+    const unchanged = ['/home/Alice.test+(dev)/private', '/home/alice.test+(dev)-other/private',
+      String.raw`\home\alice.test+(dev)\private`, '/copy/home/alice.test+(dev)/private']
+    expect(exportLogs({}, unchanged)).toContain(unchanged.join('\n'))
+    expect(exportLogs({}, ['link:/home/alice.test+(dev)/private'])).toContain('link:~/private')
+  })
+
+  it('handles UNC Windows homes with equivalent separators and case', () => {
+    vi.mocked(homedir).mockReturnValue(String.raw`\\server\share\Alice`)
+    expect(exportLogs({}, ['link://SERVER/share/aLiCe/private'])).toContain('link:~/private')
+    expect(exportLogs({}, ['link://server/share/Alice-other/private'])).toContain('link://server/share/Alice-other/private')
+  })
+
+  it('still masks home paths in file URLs (#907)', () => {
+    vi.mocked(homedir).mockReturnValue(windowsHome)
+    expect(exportLogs({}, ['file:///c:/users/ALICE.TEST+(dev)/private'])).toContain('file:///~/private')
+    vi.mocked(homedir).mockReturnValue('/home/alice')
+    expect(exportLogs({}, ['file:///home/alice/private'])).toContain('file://~/private')
+  })
+
+  it.each([
+    ['C:\\Users\\Alice\\', String.raw`c:/Users\ALICE\private`, String.raw`~\private`],
+    ['C:/Users/Alice/', 'c:/USERS/alice/private', '~/private'],
+    ['/home/alice/', '/home/alice/private', '~/private'],
+  ])('normalizes the trailing separator in %s before masking events and history (#907)', (directory, path, masked) => {
+    vi.mocked(homedir).mockReturnValue(directory)
+    configurePersistentLog(logFile)
+    logEvent('info', 'trailing-home', `link:${path}\nforged token=secret`)
+    const entry = JSON.parse(readPersistentLog(logFile)[0]!) as { detail: string }
+    expect(entry.detail).toBe(`link:${masked}forged token=***`)
+    expect(exportLogs({ host: path! }, [path!])).toContain(`host: ${masked}\n`)
+    expect(exportLogs({}, [path!])).toContain(`## profile state\n${masked}\n`)
+    expect(exportLogs({})).toContain(`trailing-home: link:${masked}forged token=***`)
+
+    const historical = JSON.stringify({ detail: path }) + '\n'
+    writeFileSync(logFile, historical)
+    const prior = exportLogs({}, [], readPersistentLog(logFile)).split('## previous sessions (persisted log)\n')[1]!.split('\n')[0]!
+    expect(JSON.parse(prior)).toEqual({ detail: masked })
+    expect(readFileSync(logFile, 'utf8')).toBe(historical)
+  })
+
+  it.each([
+    ['C:\\', String.raw`C:\private`, String.raw`~\private`],
+    ['C:/', 'c:/private', '~/private'],
+    ['\\\\server\\share\\', '//SERVER/share/private', '~/private'],
+    ['/', '/home/alice/private', '/home/alice/private'],
+  ])('preserves the path semantics of root home %s (#907)', (directory, path, expected) => {
+    vi.mocked(homedir).mockReturnValue(directory)
+    expect(exportLogs({}, [path!])).toContain(`## profile state\n${expected}\n`)
+    const unchanged = ['C:relative', 'D:/private', '//server/share-other/private', 'ordinary text']
+    expect(exportLogs({}, unchanged)).toContain(unchanged.join('\n'))
+  })
 })
 
 describe('persistent log sink', () => {

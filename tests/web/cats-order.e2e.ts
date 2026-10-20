@@ -4,7 +4,7 @@
  */
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, waitMarketCatalog } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 describe.skipIf(!dshAvailable())('web e2e: category chip order stays put', () => {
@@ -23,7 +23,7 @@ describe.skipIf(!dshAvailable())('web e2e: category chip order stays put', () =>
 
   it('leaves an already-visible chip where it was; still rescues a hidden one', async () => {
     await openMarketUi(page)
-    await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 60_000 })
+    await waitMarketCatalog(page)
 
     const chipTexts = async (): Promise<string[]> =>
       page.locator('[class*="catsWrap"] [class*="pill"], [class*="catsWrap"] button').allInnerTexts()

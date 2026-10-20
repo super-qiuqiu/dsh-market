@@ -257,6 +257,16 @@ export async function withHoistRecovery(
       logEvent('warn', 'install', `transient network failure while pnpm replayed the dependency tree (#83) — retrying once`)
       result = await run(profile, pluginArgs)
     } else if (
+      failure?.code === 'exact-version-missing'
+      && (pluginArgs[0] === 'add' || pluginArgs[0] === 'remove' || pluginArgs[0] === 'update')
+    ) {
+      // #927: market pinned name@x.y.z from /latest, but this registry's
+      // packument (often a mirror) does not list that version yet. Same argv
+      // once more gives pnpm a chance to re-fetch; if it still fails the
+      // classifier's message names "try later / switch Download region".
+      logEvent('warn', 'install', `exact version missing on this registry's packument (#927) — retrying once to re-fetch`)
+      result = await run(profile, pluginArgs)
+    } else if (
       failure?.code === 'fetch-timeout'
       && (pluginArgs[0] === 'add' || pluginArgs[0] === 'remove')
       && !pluginArgs.includes(FETCH_TIMEOUT_OVERRIDE)

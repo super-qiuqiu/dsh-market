@@ -10,7 +10,7 @@
 import { chromium } from 'playwright'
 import type { Browser, Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, waitMarketCatalog } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 describe.skipIf(!dshAvailable())('web e2e: search clear controls and sticky header', () => {
@@ -25,7 +25,7 @@ describe.skipIf(!dshAvailable())('web e2e: search clear controls and sticky head
       try { await b.waitFor({ timeout: i === 0 ? 30_000 : 3000 }); await b.click() } catch { break }
     }
     await openMarketUi(page)
-    await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 60_000 })
+    await waitMarketCatalog(page)
     // Exercise the Favorites toolbar with an actual saved catalog entry in
     // this throwaway profile, without mocking the host's settings API.
     await page.getByRole('button', { name: /^(加入收藏|Add to favorites)$/ }).first().click()

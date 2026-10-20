@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium, type Browser, type Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dismissStartGate, dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, watchConsole } from './scaffold.ts'
+import { dismissStartGate, dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, waitMarketCatalog, watchConsole } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 describe.skipIf(!dshAvailable())('host dispatches the market settings card (#516)', () => {
@@ -46,7 +46,7 @@ describe.skipIf(!dshAvailable())('host dispatches the market settings card (#516
       // Back to the market's own page: on this line Settings lives in the
       // account menu, and the section is the same one every host serves.
       await openMarketUi(page)
-      await page.getByPlaceholder(/搜索插件|Search plugins/).waitFor({ timeout: 60_000 })
+      await waitMarketCatalog(page, { cards: false })
       const artifacts = process.env.DSHM_SETTINGS_ARTIFACTS
       if (artifacts) await page.screenshot({ path: join(artifacts, `${mode}-market.png`) })
       expect(console.errors().filter(text => !/net::|Failed to load resource/.test(text))).toEqual([])
@@ -109,7 +109,7 @@ describe.skipIf(!dshAvailable())('host dispatches the market settings card (#516
     // which 0.1.7 still declares — asserted on BOTH generations, and on the
     // newer one it is the only market surface a user reaches from Settings.
     await page.getByText(/^(插件市场|Plugin Market)$/).first().click()
-    await page.getByPlaceholder(/搜索插件|Search plugins/).waitFor()
+    await waitMarketCatalog(page, { cards: false })
     const artifacts = process.env.DSHM_SETTINGS_ARTIFACTS
     if (artifacts) await page.screenshot({ path: join(artifacts, `${mode}-market.png`) })
     expect(console.errors().filter(text => !/net::|Failed to load resource/.test(text))).toEqual([])

@@ -4,16 +4,18 @@
  * Mirrors the layer-3 harness convention (playwright as a library inside
  * vitest, serial, console tripwire).
  *
- * Hermetic: catalog data comes from the bundled snapshot when the registry
- * site is unreachable; no plugin installs are performed (those live in the
- * flow and compat lanes). A fresh DSH_HOME boots with the testing notice
+ * Hermetic catalog: `launchMarketScaffold` points `DSHM_REGISTRY_URL` at a
+ * loopback browse catalog (see browse-catalog.ts). The live curated list is
+ * no longer bundled (#185), and refetching it from CI is what made Discover
+ * sit on loading/loadFail with neither search nor cards. Installs stay in
+ * the flow and compat lanes. A fresh DSH_HOME boots with the testing notice
  * and the English locale — selectors tolerate both languages.
  */
 
 import { chromium } from 'playwright'
 import type { Browser, Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, watchConsole } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, waitMarketCatalog, watchConsole } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 const HAS_DSH = dshAvailable()
@@ -96,14 +98,14 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
 
   it('opens Settings → Plugin Market and renders the catalog paginated', async () => {
     await openMarketUi(page)
-    await page.waitForSelector('[class*="masonryCol"] > [class*="card"]', { timeout: 30_000 })
+    await waitMarketCatalog(page)
     // Direct children only: a card with curated screenshots nests a
     // `.cardShots`/`.cardShot` thumbnail strip, and both class names also
     // match the loose `[class*="card"]` substring — counting descendants
     // inflated the total by however many thumbnails were on screen.
     const cards = await page.locator('[class*="masonryCol"] > [class*="card"]').count()
-    // Pagination: a bounded first page (24) instead of the full 400+ catalog,
-    // with a numbered pager underneath.
+    // Pagination: a bounded first page (24) instead of dumping the whole
+    // browse catalog, with a numbered pager underneath.
     expect(cards).toBe(24)
     // Numbered pager: primitives Buttons inside the pager row.
     expect(await page.locator('[class*="pager"] button').count()).toBeGreaterThan(0)
@@ -224,7 +226,7 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
   it('the install dialog opens and cancels cleanly', async () => {
     // Independent of the previous test's final tab.
     await page.getByRole('button', { name: /^(发现|Discover)$/ }).click()
-    await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 15_000 })
+    await waitMarketCatalog(page, { timeout: 30_000 })
     await page.getByRole('button', { name: /^(安装|Install)$/ }).first().click()
     const cancel = page.getByRole('button', { name: /^(取消|Cancel)$/ }).first()
     await cancel.waitFor({ timeout: 5000 })

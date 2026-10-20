@@ -137,6 +137,16 @@ export interface PatchState {
 /** Row ids the market is allowed to write: plain unquoted YAML scalars. */
 const ROW_ID_RE = /^[A-Za-z0-9_.-]+$/u
 
+function nextPatchContentLine(lines: readonly string[], from: number): number {
+  let index = from
+  while (index < lines.length) {
+    const line = (lines[index] ?? '').trim()
+    if (line !== '' && !line.startsWith('#')) break
+    index += 1
+  }
+  return index
+}
+
 /**
  * Line-wise scan of one patch file — the plugin-hub shapes. Deliberately
  * not a YAML parse: the file may hold structures the market's dialect
@@ -165,11 +175,12 @@ export function readUserPatchState(patchPath: string): PatchState {
       if (insertRow !== null) inserts.push(insertRow[1])
       continue
     }
-    const disableRow = /^- id: ([A-Za-z0-9_.-]+)\s*$/u.exec(line)
+    const disableRow = /^- id: (?:([A-Za-z0-9_.-]+)|'([A-Za-z0-9_.-]+)'|"([A-Za-z0-9_.-]+)")[ \t]*$/u.exec(line)
     if (disableRow === null) continue
-    const next = lines[index + 1] ?? ''
-    if (/^ {2}disabled: true\s*$/u.test(next)) disables.push(disableRow[1])
-    else if (/^ {2}disabled: false\s*$/u.test(next)) forced.push(disableRow[1])
+    const id = (disableRow[1] ?? disableRow[2] ?? disableRow[3])!
+    const next = lines[nextPatchContentLine(lines, index + 1)] ?? ''
+    if (/^ {2}disabled: true\s*$/u.test(next)) disables.push(id)
+    else if (/^ {2}disabled: false\s*$/u.test(next)) forced.push(id)
   }
   return { disables, forced, inserts }
 }
@@ -436,16 +447,31 @@ function rowBlock(rowId: string, disabled: boolean): string {
 }
 
 /**
- * Every two-line `- id: X` + `disabled: …` block for one row, in file order
- * (#821). A row that goes on with more keys (`config:` and the like) is not
- * one of these blocks: cutting its first two lines would leave the rest
- * hanging off the entry above it. The last block of a file may lack its
- * newline.
+ * Rewrite standalone id/flag rows while preserving the surrounding file.
+ * Comments and blank lines may separate the fields (#930). Look beyond them
+ * after the flag too: an indented config/name/key makes this a longer entry,
+ * whose first lines must never be removed (#821). Trailing comments stay put.
  */
-function rowBlocksRe(rowId: string, disabled: 'true' | 'false' | 'any'): RegExp {
+function rewriteRowBlocks(text: string, rowId: string, disabled: 'true' | 'false' | 'any', replace: (block: string) => string): string {
   const id = escapeRegExp(rowId)
-  const value = disabled === 'any' ? '(?:true|false)' : disabled
-  return new RegExp(`^- id: (?:${id}|'${id}'|"${id}")[ \\t]*\\r?\\n  disabled: ${value}[ \\t]*(?:\\r?\\n(?![ \\t])|(?![\\s\\S]))`, 'gmu')
+  const idLine = new RegExp(`^- id: (?:${id}|'${id}'|"${id}")[ \t]*$`, 'u')
+  const lines = text.match(/[^\n]*(?:\n|$)/gu)?.filter(Boolean) ?? []
+  const offsets: number[] = [0]
+  for (const line of lines) offsets.push(offsets[offsets.length - 1]! + line.length)
+  let result = '', copied = 0
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!idLine.test(lines[index]!.replace(/\r?\n$/u, ''))) continue
+    const flagIndex = nextPatchContentLine(lines, index + 1)
+    const flag = /^ {2}disabled: (true|false)[ \t]*(?:\r?\n)?$/u.exec(lines[flagIndex] ?? '')
+    if (flag === null || (disabled !== 'any' && flag[1] !== disabled)) continue
+    const following = nextPatchContentLine(lines, flagIndex + 1)
+    if (/^[ \t]/u.test(lines[following] ?? '')) continue
+    const start = offsets[index]!, end = offsets[flagIndex + 1]!
+    result += text.slice(copied, start) + replace(text.slice(start, end))
+    copied = end
+    index = flagIndex
+  }
+  return result + text.slice(copied)
 }
 
 /**
@@ -460,7 +486,7 @@ function lastRowFlag(text: string, rowId: string): 'true' | 'false' | null {
   let flag: 'true' | 'false' | null = null
   for (let index = 0; index < lines.length; index += 1) {
     if (!idLine.test(lines[index] ?? '')) continue
-    const value = /^ {2}disabled: (true|false)\s*$/u.exec(lines[index + 1] ?? '')
+    const value = /^ {2}disabled: (true|false)\s*$/u.exec(lines[nextPatchContentLine(lines, index + 1)] ?? '')
     if (value !== null) flag = value[1] as 'true' | 'false'
   }
   return flag
@@ -563,15 +589,13 @@ export function disableRow(patchPath: string, rowId: string): Promise<{ ok: bool
     const text = (() => {
       try { return readFileSync(patchPath, 'utf8') } catch { return '' }
     })()
-    const blocks = text.match(rowBlocksRe(rowId, 'any')) ?? []
-    if (blocks.length > 1 || blocks.some(block => /disabled: false/u.test(block))) {
-      let kept = false
-      const next = text.replace(rowBlocksRe(rowId, 'any'), block => {
-        if (kept) return ''
-        kept = true
-        const flipped = rowBlock(rowId, true)
-        return block.includes('\r\n') ? flipped.replace(/\n/gu, '\r\n') : flipped
-      })
+    let kept = false
+    const next = rewriteRowBlocks(text, rowId, 'any', block => {
+      if (kept) return ''
+      kept = true
+      return block.replace(/^ {2}disabled: false(?=[ \t]*(?:\r?\n|$))/mu, '  disabled: true')
+    })
+    if (next !== text) {
       const flipped = writePatchFile(patchPath, next)
       if (!flipped.ok) return flipped
       // A longer entry for the row further down still has the last word.
@@ -601,7 +625,7 @@ export function enableRow(patchPath: string, rowId: string): Promise<{ ok: boole
     const text = (() => {
       try { return readFileSync(patchPath, 'utf8') } catch { return '' }
     })()
-    const next = text.replace(rowBlocksRe(rowId, 'true'), '')
+    const next = rewriteRowBlocks(text, rowId, 'true', () => '')
     if (next !== text) {
       const written = writePatchFile(patchPath, withPlaceholderRestored(next))
       if (!written.ok) return written
@@ -640,7 +664,7 @@ export function removeRowBlocks(patchPath: string, rowIds: readonly string[]): {
     text = readFileSync(patchPath, 'utf8')
   } catch { return { ok: true, reason: null } } // no file, nothing to remove
   let next = text
-  for (const rowId of rowIds) next = next.replace(rowBlocksRe(rowId, 'any'), '')
+  for (const rowId of rowIds) next = rewriteRowBlocks(next, rowId, 'any', () => '')
   if (next === text) return { ok: true, reason: null }
   const written = writePatchFile(patchPath, withPlaceholderRestored(next))
   if (written.ok) logEvent('info', 'patch', `removed patch rows for ${rowIds.join(', ')}`)

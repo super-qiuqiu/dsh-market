@@ -430,15 +430,21 @@ export function readSession(key: string): any {
 
 /** Heuristic: plugins that target a terminal surface rather than the web UI. */
 export function looksTerminal(plugin: RegistryPlugin, lang: string): boolean {
+  // The package NAME is a claim about the package itself: `dsh-tui` is a
+  // terminal surface. Descriptions are not — they mention the terminal for
+  // many reasons, including a companion CLI that ships from the same
+  // repository (#931). A bare "CLI"/"terminal" mention in prose used to be
+  // enough to warn that a web plugin "may not work in the web app", and a
+  // warning that fires on ordinary plugins is one users learn to ignore.
+  if (/\b(tui|cli|tty|terminal)\b|终端|命令行/i.test(plugin.name)) return true
   const desc = (plugin.description && (plugin.description[lang] || plugin.description.en)) || ''
-  // A description can mention a CLI only to say it is NOT required. Treating
-  // that as positive evidence labels web plugins as terminal-only. Strip
-  // bounded negated clauses before applying the deliberately broad heuristic;
-  // the package name remains untouched and therefore stays strong evidence.
+  // A description can also mention a CLI only to say it is NOT required
+  // (#237). Strip bounded negated clauses first.
   const positiveDesc = desc
     .replace(/\b(?:no|without)\b[^.!?;:，。！？；\n]{0,80}\b(?:tui|cli|tty|terminal)\b/gi, '')
     .replace(/(?:无需|无须|不需要|不用)[^。！？；\n]{0,48}(?:tui|cli|tty|terminal|终端|命令行)/gi, '')
-  return /\b(tui|cli|tty|terminal)\b|终端|命令行/i.test(plugin.name + ' ' + positiveDesc)
+  // Only phrases that assert THIS plugin's own surface count.
+  return /\b(?:terminal|cli)[ -]only\b|\btui (?:app|plugin|client)\b|\bterminal (?:ui|app|plugin|client)\b|\bcommand[- ]line (?:tool|interface|app|client|plugin)\b|命令行(?:工具|插件|应用|界面|客户端)|终端(?:工具|插件|应用|界面|客户端)|只在终端|仅在终端|需要(?:一个)?终端|在终端(?:里|中)运行/i.test(positiveDesc)
 }
 
 /** Sortable field for the Discover list. */

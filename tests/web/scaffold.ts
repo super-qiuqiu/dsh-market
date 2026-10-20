@@ -17,6 +17,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from 'playwright'
+import { startBrowseCatalogServer } from './browse-catalog.ts'
+import type { BrowseCatalogServer } from './browse-catalog.ts'
 import { packFixture, startFixtureRegistry } from './registry.ts'
 import type { FixtureRegistry } from './registry.ts'
 
@@ -396,20 +398,62 @@ export async function dismissStartGate(page: Page): Promise<void> {
 export async function openMarketUi(page: Page): Promise<void> {
   await dismissStartGate(page)
   const settings = page.getByRole('button', { name: /^(设置|Settings)$/ }).first()
+  const account = page.getByRole('button', { name: /^(Account menu|账户菜单)$/ }).first()
+  // Wait for whichever door this host version actually mounts — a bare
+  // isVisible() on a still-painting shell raced into the wrong branch and
+  // left the market never opened (then the catalog wait timed out on empty).
+  // Use locator.or (not Promise.race of two waitFors): the loser of a race
+  // still rejects at timeout as an unhandled rejection and can fail a later
+  // test on hosts that only expose one of the two entries.
+  await settings.or(account).waitFor({ state: 'visible', timeout: 30_000 })
   if (await settings.isVisible().catch(() => false)) {
     await settings.click()
   } else {
     // dsh 0.2.1 moved Settings off the sidebar into the account menu
     // (`Settings ⌥⌘,`); the dialog and its Plugin Market section are the same.
-    await page.getByRole('button', { name: /^(Account menu|账户菜单)$/ }).first().click()
+    await account.click()
     await page.getByRole('menuitem', { name: /^(设置|Settings)/ }).first().click()
   }
   // The section lives inside the Settings dialog. Scope to it: an earlier
   // market instance can still be in the page underneath, and its controls sit
-  // behind the dialog's mask, where a click never lands.
-  const dialog = page.getByRole('dialog')
-  const scope = (await dialog.count()) > 0 ? dialog.first() : page
+  // behind the dialog's mask, where a click never lands. Wait for the dialog
+  // itself — counting it the instant after the click often saw zero nodes.
+  const dialog = page.getByRole('dialog').first()
+  const dialogVisible = await dialog.waitFor({ state: 'visible', timeout: 15_000 })
+    .then(() => true).catch(() => false)
+  const scope = dialogVisible ? dialog : page
   await scope.getByRole('button', { name: /插件市场|Plugin Market/ }).first().click()
+}
+
+/**
+ * Discover is ready when the search box is up — that node only mounts after
+ * a successful catalog fetch. loadFail mounts neither search nor cards, so
+ * waiting on masonry alone spent the full timeout on a permanent empty state.
+ */
+export async function waitMarketCatalog(
+  page: Page,
+  options: { timeout?: number; cards?: boolean } = {},
+): Promise<void> {
+  const timeout = options.timeout ?? 60_000
+  const wantCards = options.cards !== false
+  const search = page.getByPlaceholder(/搜索插件|Search plugins/)
+  const loadFail = page.getByText(/插件目录加载失败|The plugin catalog failed to load/)
+  const deadline = Date.now() + timeout
+  for (;;) {
+    if (await loadFail.isVisible().catch(() => false)) {
+      const detail = (await loadFail.textContent().catch(() => null))?.trim() ?? 'loadFail'
+      throw new Error(`market catalog failed to load: ${detail}`)
+    }
+    if (await search.isVisible().catch(() => false)) break
+    if (Date.now() >= deadline) {
+      throw new Error(`market catalog did not become ready within ${String(timeout)}ms (no search box)`)
+    }
+    await page.waitForTimeout(200)
+  }
+  if (wantCards) {
+    const remaining = Math.max(5_000, deadline - Date.now())
+    await page.waitForSelector('[class*="masonryCol"] > [class*="card"]', { timeout: remaining })
+  }
 }
 
 export interface ScaffoldOptions {
@@ -423,6 +467,14 @@ export interface ScaffoldOptions {
    * last entry for a name is the registry's `latest`.
    */
   fixtures?: (string | { dir: string; version: string; manifest?: Record<string, unknown> })[]
+  /**
+   * Point `DSHM_REGISTRY_URL` at a loopback catalog shaped for the browse
+   * lane. Defaults to on when `fixtures` is omitted — without this the UI
+   * specs refetch the live megabyte catalog and flake on slow CI links
+   * (loading/loadFail render neither search nor cards). Pass `false` only
+   * for a probe that deliberately needs today's live shapes.
+   */
+  localCatalog?: boolean
 }
 
 function run(command: string, env: NodeJS.ProcessEnv, cwd: string = REPO_ROOT): void {
@@ -477,6 +529,7 @@ export async function launchMarketScaffold(options: ScaffoldOptions = {}): Promi
   // Only now redirect pnpm at the fixture registry, so the fixtures the
   // specs install go through real resolution without touching the network.
   let registry: FixtureRegistry | null = null
+  let browseCatalog: BrowseCatalogServer | null = null
   if (options.fixtures !== undefined && options.fixtures.length > 0) {
     registry = await startFixtureRegistry(options.fixtures.map(
       entry => typeof entry === 'string' ? packFixture(entry, home) : packFixture(entry.dir, home, entry.version, entry.manifest),
@@ -502,6 +555,12 @@ export async function launchMarketScaffold(options: ScaffoldOptions = {}): Promi
       npm_config_registry: registry.npmUrl,
       DSHM_NPM_MIRROR: registry.npmUrl.replace(/\/+$/, ''),
     }
+  } else if (options.localCatalog !== false) {
+    // Browse / settings UI lane: a tiny local catalog so Discover does not
+    // depend on GitHub Pages / the catalog npm package answering inside the
+    // Playwright wait. Install/update specs pass `fixtures` instead.
+    browseCatalog = await startBrowseCatalogServer()
+    env = { ...env, DSHM_REGISTRY_URL: browseCatalog.catalogUrl }
   }
 
   const port = await freePort()
@@ -580,6 +639,7 @@ export async function launchMarketScaffold(options: ScaffoldOptions = {}): Promi
     async () => {
       try {
         await registry?.close()
+        await browseCatalog?.close()
       } finally {
         rmSync(home, { recursive: true, force: true })
       }
@@ -624,6 +684,7 @@ export async function launchMarketScaffold(options: ScaffoldOptions = {}): Promi
     },
     close: async () => {
       await registry?.close()
+      await browseCatalog?.close()
       await stop(child)
       rmSync(home, { recursive: true, force: true })
     },

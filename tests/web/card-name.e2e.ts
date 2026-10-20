@@ -1,12 +1,11 @@
 /**
- * The card header, against the REAL catalog.
+ * The card header, against the browse catalog's compound identity.
  *
- * 104 of the 1393 live entries carry a compound identity
- * (`OpenViking#examples/dsh-memory-plugin`) because their repository holds
- * several plugins. The unit spec pins the transform; this pins that a real
- * catalog still contains such an entry and that the market no longer shows
- * one — a fixture could not, since the shapes here come from upstream and
- * change without us.
+ * Live catalogs carry entries like `OpenViking#examples/dsh-memory-plugin`
+ * when a repository holds several plugins. The unit spec pins the transform;
+ * this pins that a compound identity still renders as a cleaned title — the
+ * browse catalog seeds one such name so CI does not depend on today's live
+ * listing answering inside the wait.
  *
  * It fails loudly when no compound entry is on screen rather than passing
  * on having checked nothing.
@@ -14,7 +13,7 @@
 
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, waitMarketCatalog } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 describe.skipIf(!dshAvailable())('web e2e: card header', () => {
@@ -33,7 +32,7 @@ describe.skipIf(!dshAvailable())('web e2e: card header', () => {
 
   it('shows author-and-avatar as one byline under the plugin name', async () => {
     await openMarketUi(page)
-    await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 60_000 })
+    await waitMarketCatalog(page)
     // Walk the grid until a compound identity appears. The title attribute
     // keeps the raw catalog name, so this compares what the card SHOWS
     // against what it is — no dependence on driving the search box.

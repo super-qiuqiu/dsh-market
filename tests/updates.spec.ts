@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkUpdates, compareVersions, isUpgrade } from '../src/updates.ts'
+import { checkUpdates, compareVersions, fetchNpmLatest, isUpgrade } from '../src/updates.ts'
 
 describe('compareVersions', () => {
   it('orders by major, minor, then patch', () => {
@@ -969,5 +969,40 @@ describe('checkUpdates — a floating git install follows the repository\'s vers
     const result = await checkUpdates('web', true, profileWith(spec, OLD, '2.0.0', ', path: /packages/themer'))
     expect(askedFor.endsWith('/packages/themer/package.json'), askedFor).toBe(true)
     expect(result.themer).toMatchObject({ updateAvailable: false })
+  })
+})
+
+
+describe('fetchNpmLatest — packument fallback (#932)', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('falls back to the full packument dist-tag when /latest fails', async () => {
+    // Measured in #932: registry.npmjs.org answered 429 to /latest while the
+    // packument answered 200 with the same dist-tag. Returning null made the
+    // fresh install fall back to the bare name, and pnpm's fresh-release hold
+    // installed an OLDER version than the catalog had just shown.
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url))
+      if (String(url).endsWith('/dsh-plugin-compat-check/latest')) return new Response('rate limited', { status: 429 })
+      return new Response(JSON.stringify({ 'dist-tags': { latest: '0.1.3' } }), { status: 200 })
+    }))
+    await expect(fetchNpmLatest('dsh-plugin-compat-check')).resolves.toBe('0.1.3')
+    expect(calls.some(url => url.endsWith('/dsh-plugin-compat-check'))).toBe(true)
+  })
+
+  it('returns null when both reads fail, keeping the old contract', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 503 })))
+    await expect(fetchNpmLatest('dsh-plugin-compat-check')).resolves.toBeNull()
+  })
+
+  it('does not pay for the packument when /latest answers', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url))
+      return new Response(JSON.stringify({ version: '0.1.3' }), { status: 200 })
+    }))
+    await expect(fetchNpmLatest('dsh-plugin-compat-check')).resolves.toBe('0.1.3')
+    expect(calls).toHaveLength(1)
   })
 })

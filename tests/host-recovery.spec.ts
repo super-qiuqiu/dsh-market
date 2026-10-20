@@ -64,6 +64,16 @@ describe('readHostRecoveryView', () => {
     expect(view.patchName).toBe('cordis.patch.yml')
   })
 
+  it('does not offer an old backup when all flags survive with comments (#930)', () => {
+    const patch = '- id: alpha\n  # still here\n\n  disabled: true\n- id: beta\n  # enabled\n  disabled: false\n'
+    const backup = '# old configuration with a longer comment '.repeat(8) + '\n- id: alpha\n  disabled: true\n- id: beta\n  disabled: false\n'
+    const dir = profile({ patch, backup })
+    const view = readHostRecoveryView(patchPathOf(dir))
+    expect(view.currentRowIds).toEqual(['alpha', 'beta'])
+    expect(view.lostRowIds).toEqual([])
+    expect(view.offerRestore).toBe(false)
+  })
+
   it('says nothing when there is no backup beside the patch', () => {
     const dir = profile({ backup: null })
     expect(readHostRecoveryView(patchPathOf(dir)).offerRestore).toBe(false)

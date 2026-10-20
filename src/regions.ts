@@ -38,7 +38,14 @@ export function asRegion(value: unknown): Region | null {
  * pnpm's registry alone and setting it.
  */
 export const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org'
-const NPM_CHINA = 'https://mirrors.cloud.tencent.com/npm'
+/**
+ * Default npm registry for the China download region, no trailing slash.
+ *
+ * Exported so failure classifiers can recognize this host in pnpm's output
+ * (#926) without duplicating the URL.
+ */
+export const CHINA_NPM_REGISTRY = 'https://mirrors.cloud.tencent.com/npm'
+const NPM_CHINA = CHINA_NPM_REGISTRY
 
 /**
  * First public prefix used for unauthenticated GitHub reads, no trailing slash.

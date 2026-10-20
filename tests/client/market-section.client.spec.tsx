@@ -1233,7 +1233,11 @@ describe('MarketSection (jsdom)', () => {
     expect(foot?.textContent).toContain(en.terminalCautionStartup)
   })
 
-  it('still shows the startup line when only the description mentions a CLI (#739)', async () => {
+  it('still shows the startup line when the description claims a CLI surface (#739, #931)', async () => {
+    // #739 pinned "a description mentioning a CLI counts". #931 showed that
+    // rule fires on web plugins whose repository happens to ship a CLI too,
+    // so the evidence is now a phrase that asserts THIS plugin's surface —
+    // here "CLI-only" instead of the old bare "Supports a CLI flag".
     stubFetch({
       '/dsh-market/registry': {
         source: 'live',
@@ -1244,7 +1248,7 @@ describe('MarketSection (jsdom)', () => {
           plugins: [{
             name: 'note-tool', owner: 'alice', url: 'https://github.com/alice/note-tool',
             category: 'tools', npm: null, stars: 1, added: '2026-08-01',
-            description: { en: 'Supports a CLI flag', zh: '支持命令行参数' }, install: 'dsh plugin install note-tool',
+            description: { en: 'A CLI-only note tool', zh: '命令行工具，管理笔记' }, install: 'dsh plugin install note-tool',
           }],
         },
       },

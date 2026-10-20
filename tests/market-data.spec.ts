@@ -31,6 +31,24 @@ describe('looksTerminal', () => {
   it('still warns for plugins that positively target a terminal surface', () => {
     expect(looksTerminal(plugin({ name: 'dsh-tui' }), 'en')).toBe(true)
     expect(looksTerminal(plugin({ description: { zh: '为 DSH 提供命令行界面。' } }), 'zh')).toBe(true)
+    expect(looksTerminal(plugin({ description: { en: 'A terminal UI for DSH sessions.' } }), 'en')).toBe(true)
+  })
+
+  it('does not call a web plugin terminal-only because a companion CLI is mentioned (#931)', () => {
+    // Reported shape: a web plugin (client platform + bundle) whose catalog
+    // description also says the repository ships a CLI. The bare mention used
+    // to trigger "may not work in the web app" on the install confirmation.
+    expect(looksTerminal(plugin({
+      name: 'dsh-plugin-compat-check',
+      description: {
+        en: 'Web compatibility settings panel and plugin-detail findings. The repository also ships a CLI.',
+        zh: '网页兼容性设置面板与插件详情检查。仓库里另外提供了一个 CLI。',
+      },
+    }), 'en')).toBe(false)
+    expect(looksTerminal(plugin({
+      name: 'dsh-plugin-compat-check',
+      description: { zh: '网页兼容性设置面板与插件详情检查。仓库里另外提供了一个 CLI。' },
+    }), 'zh')).toBe(false)
   })
 })
 

@@ -66,6 +66,72 @@ describe('readUserPatchState', () => {
   })
 })
 
+describe('commented flag rows (#930)', () => {
+  it.each(['\n', '\r\n'])('reads flags through comments and blanks with %j line endings', eol => {
+    const dir = patchDir()
+    try {
+      const patch = join(dir, 'cordis.patch.yml')
+      writeFileSync(patch, ['- id: alpha', '  # disabled: false is only a comment', '', '  disabled: true', '- id: beta', '  # another reason', '  disabled: false', '- id: missing', '  # no flag belongs to missing', '- id: gamma', '  disabled: true'].join(eol))
+      expect(readUserPatchState(patch)).toEqual({ disables: ['alpha', 'gamma'], forced: ['beta'], inserts: [] })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it.each(['\n', '\r\n'])('flips a commented flag without dropping its explanation or duplicating it (%j)', async eol => {
+    const dir = patchDir()
+    try {
+      const patch = join(dir, 'cordis.patch.yml')
+      const text = ['- id: pet', '  # keep this explanation', '', '  disabled: false', '- id: keep', '  disabled: true', ''].join(eol)
+      writeFileSync(patch, text)
+      expect((await disableRow(patch, 'pet')).ok).toBe(true)
+      expect(readPatch(dir)).toBe(text.replace('disabled: false', 'disabled: true'))
+      await disableRow(patch, 'pet')
+      expect(readPatch(dir)).toBe(text.replace('disabled: false', 'disabled: true'))
+      await enableRow(patch, 'pet')
+      expect(load(readPatch(dir))).toEqual([{ id: 'keep', disabled: true }])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it.each(["'pet'", '"pet"'])('keeps quoted commented toggles idempotent (%s)', async id => {
+    const dir = patchDir()
+    try {
+      const patch = join(dir, 'cordis.patch.yml')
+      const text = `- id: ${id}\n  # rationale\n  disabled: false`
+      writeFileSync(patch, text)
+      expect(readUserPatchState(patch).forced).toEqual(['pet'])
+      await disableRow(patch, 'pet')
+      await disableRow(patch, 'pet')
+      expect(readPatch(dir)).toBe(text.replace('disabled: false', 'disabled: true'))
+      expect(readUserPatchState(patch).disables).toEqual(['pet'])
+      await enableRow(patch, 'pet')
+      expect(load(readPatch(dir))).toEqual([])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('removes commented standalone flags while preserving longer entries across blank lines', () => {
+    const dir = patchDir()
+    try {
+      const patch = join(dir, 'cordis.patch.yml')
+      const longer = '- id: pet\n  # preserve config\n  disabled: false\n\n  # still part of pet\n  config:\n    size: 2\n'
+      const standalone = '- id: pet\n  # a standalone override\n\n  disabled: true'
+      writeFileSync(patch, longer + standalone)
+      expect(removeRowBlocks(patch, ['pet']).ok).toBe(true)
+      expect(readPatch(dir)).toBe(longer)
+      expect(load(readPatch(dir))).toEqual([{ id: 'pet', disabled: false, config: { size: 2 } }])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('recognizes the last commented flag in a longer entry after a flip', async () => {
+    const dir = patchDir()
+    try {
+      const patch = join(dir, 'cordis.patch.yml')
+      const longer = '- id: pet\n  # a later override\n  disabled: false\n  config:\n    size: 2\n'
+      writeFileSync(patch, '- id: pet\n  disabled: false\n' + longer)
+      expect((await disableRow(patch, 'pet')).ok).toBe(true)
+      expect(readPatch(dir)).toBe('- id: pet\n  disabled: true\n' + longer + '- id: pet\n  disabled: true\n')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
 describe('userPatchPackageReferences', () => {
   it('finds exact package and exported-subpath inserts without prefix collisions', () => {
     const dir = patchDir()

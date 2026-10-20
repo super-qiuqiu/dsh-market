@@ -560,6 +560,43 @@ describe('withHoistRecovery', () => {
     expect(result.stderr).toContain('下载超时')
   })
 
+  it('retries the same argv once when an exact pin is missing from the registry packument (#927)', async () => {
+    const stderr = [
+      '[ERR_PNPM_NO_MATCHING_VERSION] No matching version found for @michengai/dsh-archive-manager@1.1.3 while fetching it from https://mirrors.cloud.tencent.com/npm/',
+      'The latest release of @michengai/dsh-archive-manager is "1.1.2".',
+    ].join('\n')
+    const calls: string[][] = []
+    let failFirst = true
+    const run = async (_profile: string, args: string[]): Promise<InstallResult> => {
+      calls.push(args)
+      if (failFirst) {
+        failFirst = false
+        return { exitCode: 1, timedOut: false, stdout: '', stderr, cancelled: false }
+      }
+      return ok
+    }
+    const result = await withHoistRecovery(run, 'web', ['add', '@michengai/dsh-archive-manager@1.1.3'])
+    expect(result.exitCode).toBe(0)
+    expect(calls).toEqual([
+      ['add', '@michengai/dsh-archive-manager@1.1.3'],
+      ['add', '@michengai/dsh-archive-manager@1.1.3'],
+    ])
+  })
+
+  it('keeps the sync-lag sentence when the exact-pin retry also loses (#927)', async () => {
+    const stderr = [
+      '[ERR_PNPM_NO_MATCHING_VERSION] No matching version found for @michengai/dsh-archive-manager@1.1.3 while fetching it from https://mirrors.cloud.tencent.com/npm/',
+      'The latest release of @michengai/dsh-archive-manager is "1.1.2".',
+    ].join('\n')
+    const run = async (): Promise<InstallResult> => (
+      { exitCode: 1, timedOut: false, stdout: '', stderr, cancelled: false }
+    )
+    const result = await withHoistRecovery(run, 'web', ['add', '@michengai/dsh-archive-manager@1.1.3'])
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('还没同步')
+    expect(result.stderr).not.toContain('通常是该版本被弃用或从未发布')
+  })
+
   it('replaces cmd.exe\'s undecodable output rather than printing it (#502)', async () => {
     // Windows answers 9009 for "command not found" and writes its message in
     // the OEM code page, which reaches us as replacement characters. Leaving

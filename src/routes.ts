@@ -2051,6 +2051,12 @@ export function mountMarketRoutes(
         version,
         requirement: verdict.requirement,
         hostVersion: host?.version ?? null,
+        // #923: the client's "find a compatible version" search is keyed by
+        // the npm name, and the install branch could fall back to the catalog
+        // entry's `npm` while the update branch had nothing. The value is
+        // already here — it is this function's first argument and the key the
+        // registry lookup above used — so publish it.
+        npmName,
       },
       error: nothingWasInstalled
         ? `${displayName} ${version ?? ''} 要求的 DSH 版本是 ${verdict.requirement ?? '未知'}，而当前运行的是 ${host?.version ?? '未知版本'}，装上多半会直接报错。已停止，没有安装任何东西。 / ${displayName} ${version ?? ''} declares it needs DSH ${verdict.requirement ?? '(unknown)'}, and this host is ${host?.version ?? 'unknown'}; installing it would most likely break the plugin. Nothing was installed.`
@@ -4711,6 +4717,12 @@ sendJson(response, 200, { updates })
             if (pinnedForIdentification) {
               declareProfileDependency(config.profile, name, pinValue, activeProfileDir)
             }
+            // #928: an update is remove-then-add, and a host killed between
+            // the two leaves a package that is simply gone — with no record
+            // of what was being attempted, because the completion log never
+            // runs. Write the intent first, so the log can answer "where did
+            // my plugin go" after the fact.
+            logEvent('info', 'update-start', `${name} -> ${target} (profile ${config.profile})`)
             const result = await runPlugin(config.profile, addArgs)
             const cancelled = result.cancelled
             // The pin above is the market's own write, so it is undone whenever
@@ -5189,6 +5201,24 @@ sendJson(response, 200, { updates })
             if (droppedBundles.length > 0) {
               logEvent('warn', 'update-bundles-dropped',
                 `${name}: after this update ${droppedBundles.join(', ')} ${droppedBundles.length === 1 ? 'is' : 'are'} still declared in dependencies but no longer in dsh.profile.bundles, so ${droppedBundles.length === 1 ? 'it' : 'they'} will not load — the market did not write that change (#720)`)
+            }
+            // #935: the desktop manager's removeBundle writes the bundle row
+            // out FIRST and only then checks whether a live fiber still uses
+            // the package — so a `bundle-in-use` refusal leaves the row gone
+            // while dependencies and node_modules stay. The plugin keeps
+            // running this session and silently fails to load next boot.
+            // Restore the row, scoped to exactly that refusal and to this
+            // operation's own target: the read-only stance in #720/#696
+            // still holds for every other way a row can disappear.
+            if (!ok && !cancelled && result.refusalCode === 'bundle-in-use') {
+              const targetRowDropped = bundlesDroppedFromProfile(
+                manifestBefore, config.profile, activeProfileDir,
+                new Set(removedDeclaration === null ? [] : [removedDeclaration.name]),
+              ).includes(name)
+              if (targetRowDropped && addProfileBundle(activeProfileDir, name)) {
+                logEvent('warn', 'update-bundles-restored',
+                  `${name}: the desktop app removed its bundle row before refusing the update (bundle-in-use) — restored it so the plugin still loads on the next boot (#935)`)
+              }
             }
             logEvent(ok || cancelled ? 'info' : 'error', 'update',
               `${name} -> ${target} exit=${String(result.exitCode)}${result.timedOut ? ' TIMEOUT' : ''}${cancelled ? ' CANCELLED' : ''}${stale ? ` STALE(${staleReason ?? 'unknown'})` : ''}${ok || cancelled ? '' : ` err=${failureDetail(result)}`}`)
@@ -5984,6 +6014,10 @@ sendJson(response, 200, { updates })
             // it is meant to clean up after, and the rows outlive the package
             // as boot-time orphans (#799).
             const ownedRows = rowIdsForPackage(host, activeProfileDir, name)
+            // #928: the same intent record as the update path — an uninstall
+            // interrupted mid-remove leaves the same "where did it go" with no
+            // entry saying what was running.
+            logEvent('info', 'uninstall-start', `${name} (profile ${config.profile})`)
             const result = await runPlugin(config.profile, ['remove', name])
             const cancelled = result.cancelled
             const ok = result.exitCode === 0 && !result.timedOut && !cancelled
@@ -6378,7 +6412,13 @@ sendJson(response, 200, { updates })
               // (a 404 for this package's own download: the classifier names
               // the last path segment, the tarball file for that URL form).
               const ownTarball = `${plainTarget.slice(plainTarget.lastIndexOf('/') + 1)}-${String(registryLatest)}.tgz`
-              const notOnMirror = (failure?.code === 'no-matching-version' && aboutThisPackage)
+              // `exact-version-missing` (#927) is the same lag shape with a
+              // clearer sentence; install still falls back to the bare name
+              // after withHoistRecovery's one same-argv retry loses.
+              const notOnMirror = (
+                (failure?.code === 'no-matching-version' || failure?.code === 'exact-version-missing')
+                && aboutThisPackage
+              )
                 || (failure?.code === 'fetch-404' && (failure.pkg === plainTarget || failure.pkg === ownTarball))
               if (heldBack || notOnMirror) {
                 // The user asked for the young release anyway. That request is

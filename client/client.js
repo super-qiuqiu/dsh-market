@@ -2001,8 +2001,9 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		}
 		/** Heuristic: plugins that target a terminal surface rather than the web UI. */
 		function looksTerminal(plugin, lang) {
+			if (/\b(tui|cli|tty|terminal)\b|终端|命令行/i.test(plugin.name)) return true;
 			const positiveDesc = (plugin.description && (plugin.description[lang] || plugin.description.en) || "").replace(/\b(?:no|without)\b[^.!?;:，。！？；\n]{0,80}\b(?:tui|cli|tty|terminal)\b/gi, "").replace(/(?:无需|无须|不需要|不用)[^。！？；\n]{0,48}(?:tui|cli|tty|terminal|终端|命令行)/gi, "");
-			return /\b(tui|cli|tty|terminal)\b|终端|命令行/i.test(plugin.name + " " + positiveDesc);
+			return /\b(?:terminal|cli)[ -]only\b|\btui (?:app|plugin|client)\b|\bterminal (?:ui|app|plugin|client)\b|\bcommand[- ]line (?:tool|interface|app|client|plugin)\b|命令行(?:工具|插件|应用|界面|客户端)|终端(?:工具|插件|应用|界面|客户端)|只在终端|仅在终端|需要(?:一个)?终端|在终端(?:里|中)运行/i.test(positiveDesc);
 		}
 		/** Days per TimeRange (`all` has no cutoff and is handled by the caller). */
 		const TIME_RANGE_DAYS = {
